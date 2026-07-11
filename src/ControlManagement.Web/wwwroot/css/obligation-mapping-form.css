@@ -1,0 +1,537 @@
+/* ===================================================================
+   Practices - Obligation Mapping (full-page form)
+   The form is rendered by Views/Repository/ObligationMappingForm.cshtml.
+   Layout obeys the same container the rest of the Repository pages use
+   (the .content-wrapper inside the GracPlusNew layout), so there is no
+   modal, no overlay, no horizontal overflow.
+   =================================================================== */
+
+/* Compact page heading - removes the wide top eyebrow + intro paragraph spacing */
+.page-heading.om-page-heading {
+    padding-bottom: 6px;
+    margin-bottom: 10px;
+}
+.page-heading.om-page-heading .eyebrow {
+    margin: 0 0 2px;
+}
+.page-heading.om-page-heading h1 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.om-form-page {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;                  /* tightened from 18 */
+    padding-bottom: 72px;       /* room for sticky action bar */
+    width: 100%;
+    max-width: 100%;
+}
+
+/* Card sections (mirror the StatementForm look, compact spacing) */
+.om-card {
+    background: #fff;
+    border: 1px solid #e3e9f3;
+    border-radius: 10px;
+    padding: 14px 16px;         /* tightened from 20 / 22 */
+    box-shadow: 0 1px 0 #0b153310;
+}
+.om-card-compact {
+    padding: 12px 16px;
+}
+.om-card-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 10px;
+}
+.om-card-heading-tight {
+    margin-bottom: 8px;
+}
+.om-card-heading h2 {
+    margin: 0 0 2px;
+    font-size: 14px;
+    font-weight: 700;
+    color: #0a163a;
+    letter-spacing: .01em;
+}
+.om-card-heading p {
+    margin: 0;
+    font-size: 12px;
+    color: #53627a;
+    line-height: 1.35;
+}
+
+.om-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 16px;             /* tightened from 14 / 18 */
+}
+.om-form-grid-compact {
+    gap: 6px 16px;
+}
+.om-form-grid .form-field.full { grid-column: 1 / -1; }
+.om-form-grid .form-field { display: flex; flex-direction: column; gap: 4px; }
+.om-form-grid .form-field-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: #344054;
+}
+.om-form-grid .required { color: #b42318; }
+.om-form-grid select {
+    width: 100%;
+    max-width: 560px;           /* practice picker doesn't need to span full width */
+    height: 36px;
+    border: 1px solid #d7e0ec;
+    border-radius: 8px;
+    padding: 0 12px;
+    background: #fff;
+    font-size: 13px;
+    color: #172033;
+}
+.om-form-grid select:focus {
+    outline: 2px solid #2465ca33;
+    border-color: #2465ca;
+}
+
+/* Matrix grid */
+.om-table-wrap {
+    border: 1px solid #e3e9f3;
+    border-radius: 10px;
+    overflow: hidden;            /* no horizontal overflow on the page */
+}
+.om-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 13px;
+    background: #fff;
+}
+.om-table col.col-authority { width: 13%; }
+.om-table col.col-artifact  { width: 17%; }
+.om-table col.col-release   { width: 9%; }
+.om-table col.col-stref     { width: 10%; }
+.om-table col.col-sttitle   { width: 21%; }
+.om-table col.col-obligation{ width: 30%; }
+.om-table thead th {
+    background: #0A163A;
+    color: #fff;
+    text-transform: uppercase;
+    font-size: 10.5px;
+    letter-spacing: .03em;
+    font-weight: 700;
+    padding: 9px 12px;
+    text-align: left;
+    line-height: 1.25;
+    vertical-align: middle;
+}
+.om-table tbody td {
+    padding: 8px 12px;
+    border-top: 1px solid #eef1f7;
+    vertical-align: middle;
+    color: #172033;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+    font-size: 12.5px;
+}
+.om-table tbody tr:first-child td { border-top: 0; }
+.om-table tbody tr:nth-child(even) td { background: #f7f9fc; }
+.om-table tbody tr:hover td { background: #eef4fc; }
+.om-table tbody td.empty {
+    text-align: center;
+    color: #667085;
+    padding: 16px 12px;
+    font-style: italic;
+}
+.om-table td.col-obligation-cell { padding: 5px 10px; }
+.om-table select {
+    width: 100%;
+    min-width: 0;
+    height: 32px;
+    border: 1px solid #d7e0ec;
+    border-radius: 7px;
+    padding: 0 28px 0 9px;
+    background: #fff;
+    font-size: 12.5px;
+    color: #172033;
+    text-overflow: ellipsis;
+}
+.om-table select:focus {
+    outline: 2px solid #2465ca33;
+    border-color: #2465ca;
+}
+
+/* Bottom action bar.  position: sticky pins the bar to the bottom of the
+   *content* area while letting the page scroll naturally - no fixed/modal
+   overlay needed. */
+.om-action-bar {
+    position: sticky;
+    bottom: 0;
+    margin-top: 10px;
+    padding: 6px 0;
+    background: linear-gradient(to top, #ffffff 90%, #ffffff00);
+    z-index: 2;
+}
+.om-action-bar-inner {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #fff;
+    border: 1px solid #e3e9f3;
+    border-radius: 8px;
+}
+.om-action-bar-inner .button {
+    min-width: 0;
+    padding: 6px 14px;
+    height: 34px;
+    font-size: 13px;
+}
+
+/* Inline message banner */
+.form-message {
+    margin: 0 0 10px;
+    padding: 8px 12px;
+    border-radius: 7px;
+    border: 1px solid #d7e0ec;
+    background: #f4f7fb;
+    color: #172033;
+    font-size: 12.5px;
+}
+.form-message.success {
+    border-color: #b5e0c4;
+    background: #ecfdf3;
+    color: #105e2c;
+}
+.form-message.error {
+    border-color: #f0c5c0;
+    background: #fef3f2;
+    color: #b42318;
+}
+
+/* Narrow viewports */
+@media (max-width: 900px) {
+    .om-form-grid { grid-template-columns: minmax(0, 1fr); }
+    .om-action-bar-inner { flex-direction: column-reverse; align-items: stretch; }
+    .om-table thead { display: none; }
+    .om-table, .om-table tbody, .om-table tr, .om-table td { display: block; width: 100%; }
+    .om-table tr {
+        border: 1px solid #e3e9f3;
+        border-radius: 10px;
+        margin-bottom: 12px;
+        background: #fff;
+    }
+    .om-table td { border: 0; padding: 8px 12px; }
+    .om-table td.empty { padding: 18px 12px; }
+}
+
+/* ---------- Inline obligation preview (under the row dropdown) ----------
+   Card is expandable in-place: the collapsed view shows Name + summary chips
+   + a truncated Evidence Types line; the expanded view drops the full Evidence
+   Details table into the same card so the user never leaves the row. */
+.om-row-preview {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #344054;
+}
+.om-preview-card {
+    background: #f7f9fc;
+    border: 1px solid #e3e9f3;
+    border-radius: 8px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+.om-preview-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 20px;
+}
+.om-preview-name {
+    font-weight: 700;
+    color: #0a163a;
+    font-size: 12.5px;
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+.om-preview-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fff;
+    border: 1px solid #d7e0ec;
+    color: #2465ca;
+    font-size: 11.5px;
+    font-weight: 700;
+    border-radius: 6px;
+    padding: 3px 9px;
+    cursor: pointer;
+    white-space: nowrap;
+    line-height: 1;
+    transition: background .12s ease, border-color .12s ease;
+}
+.om-preview-toggle:hover {
+    background: #eef4fc;
+    border-color: #2465ca;
+}
+.om-preview-toggle:focus-visible {
+    outline: 2px solid #2465ca55;
+    outline-offset: 1px;
+}
+.om-preview-toggle i { font-size: 10.5px; }
+.om-preview-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 10px;
+}
+.om-preview-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    background: #fff;
+    border: 1px solid #d7e0ec;
+    border-radius: 999px;
+    padding: 2px 9px;
+    font-size: 11.5px;
+    color: #172033;
+}
+.om-preview-chip strong {
+    color: #344054;
+    font-weight: 700;
+}
+.om-preview-evidence {
+    font-size: 11.5px;
+    color: #53627a;
+    line-height: 1.4;
+}
+.om-preview-evidence strong {
+    color: #344054;
+    font-weight: 700;
+}
+.om-preview-loading {
+    color: #53627a;
+    font-style: italic;
+    font-size: 11.5px;
+}
+.om-preview-error {
+    color: #b42318;
+    font-size: 11.5px;
+}
+/* Expanded details drop cleanly into the same card - no popup, no scroll jump */
+.om-preview-details {
+    margin-top: 4px;
+    padding: 8px 10px;
+    background: #fff;
+    border: 1px solid #e3e9f3;
+    border-radius: 7px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.om-preview-details-heading {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #0a163a;
+}
+.om-preview-evidence-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    border: 1px solid #e3e9f3;
+    border-radius: 6px;
+    overflow: hidden;
+    font-size: 11.5px;
+}
+.om-preview-evidence-table thead th {
+    background: #f4f7fb;
+    color: #344054;
+    text-transform: uppercase;
+    font-size: 10.5px;
+    letter-spacing: .03em;
+    font-weight: 700;
+    padding: 6px 9px;
+    text-align: left;
+}
+.om-preview-evidence-table tbody td {
+    padding: 6px 9px;
+    border-top: 1px solid #eef1f7;
+    vertical-align: top;
+    color: #172033;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.om-preview-evidence-table tbody tr:first-child td { border-top: 0; }
+.om-preview-empty {
+    margin: 0;
+    padding: 8px 10px;
+    color: #667085;
+    font-style: italic;
+    font-size: 11.5px;
+    text-align: center;
+    background: #f7f9fc;
+    border: 1px dashed #d7e0ec;
+    border-radius: 6px;
+}
+
+/* ---------- Slide-in side panel for full obligation details ---------- */
+.om-side-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 1100;
+    pointer-events: none;
+}
+.om-side-panel.is-open { pointer-events: auto; }
+.om-side-panel-overlay {
+    position: absolute;
+    inset: 0;
+    background: #0b153355;
+    opacity: 0;
+    transition: opacity .18s ease;
+}
+.om-side-panel.is-open .om-side-panel-overlay { opacity: 1; }
+.om-side-panel-card {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 100vh;
+    width: min(420px, 92vw);
+    background: #fff;
+    box-shadow: -10px 0 25px #17203322;
+    transform: translateX(100%);
+    transition: transform .22s ease;
+    display: flex;
+    flex-direction: column;
+}
+.om-side-panel.is-open .om-side-panel-card { transform: translateX(0); }
+.om-side-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid #e3e9f3;
+}
+.om-side-panel-head h2 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    color: #0a163a;
+    letter-spacing: .01em;
+}
+.om-side-panel-close {
+    background: transparent;
+    border: 0;
+    color: #53627a;
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+}
+.om-side-panel-close:hover { color: #b42318; }
+.om-side-panel-body {
+    padding: 14px 18px 22px;
+    overflow-y: auto;
+    flex: 1;
+    font-size: 13px;
+    color: #172033;
+}
+.om-side-name {
+    margin: 0 0 12px;
+    font-size: 15px;
+    font-weight: 700;
+    color: #0a163a;
+    line-height: 1.25;
+}
+.om-side-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 14px;
+    margin: 0 0 16px;
+}
+.om-side-grid > div { display: flex; flex-direction: column; gap: 2px; }
+.om-side-grid > div.full { grid-column: 1 / -1; }
+.om-side-grid dt {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    color: #53627a;
+    margin: 0;
+}
+.om-side-grid dd { margin: 0; font-size: 12.5px; color: #172033; }
+.om-side-section {
+    margin: 18px 0 8px;
+    font-size: 12.5px;
+    font-weight: 700;
+    color: #0a163a;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+}
+.om-side-evidence {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    border: 1px solid #e3e9f3;
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 12px;
+}
+.om-side-evidence thead th {
+    background: #f4f7fb;
+    color: #344054;
+    text-transform: uppercase;
+    font-size: 10.5px;
+    letter-spacing: .03em;
+    padding: 8px 10px;
+    text-align: left;
+}
+.om-side-evidence tbody td {
+    padding: 8px 10px;
+    border-top: 1px solid #eef1f7;
+    vertical-align: top;
+    color: #172033;
+}
+.om-side-evidence tbody tr:first-child td { border-top: 0; }
+.om-side-panel-empty {
+    margin: 6px 0 0;
+    padding: 12px;
+    border: 1px dashed #cdd6e3;
+    border-radius: 8px;
+    color: #667085;
+    font-style: italic;
+    text-align: center;
+}
+.om-side-grid .muted { color: #98a2b3; font-style: italic; }
+
+/* ---------- Obligation Master tree-grid styling (Part 1) ---------- */
+.obligation-mapping-row .tree-toggle-spacer { width: 18px; display: inline-block; }
+.obligation-mapping-row .tree-reference { font-weight: 600; }
+.obligation-mapping-row .tree-reference.muted { color: #98a2b3; font-style: italic; font-weight: 500; }
+.obligation-mapping-row td { background: #f9fbfd; }
+.obligation-parent-row .tree-reference { font-weight: 700; color: #0a163a; }
+
+/* Obligation Name on the Practice-Obligation Mapping list - acts as the
+   "View Obligation Details" trigger (opens the slide-in side panel). */
+.obligation-name-link {
+    color: #0a163a;
+    font-weight: 700;
+    text-decoration: none;
+    border-bottom: 1px dashed transparent;
+}
+.obligation-name-link:hover,
+.obligation-name-link:focus {
+    color: #2465ca;
+    border-bottom-color: #2465ca;
+    outline: 0;
+}

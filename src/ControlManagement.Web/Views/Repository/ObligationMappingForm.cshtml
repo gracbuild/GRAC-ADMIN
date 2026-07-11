@@ -1,0 +1,90 @@
+@{
+    var mode = (ViewBag.Mode as string ?? "add").ToLowerInvariant();
+    var readonlyMode = mode == "view";
+    ViewData["Title"] = readonlyMode ? "View Practice-Obligation Mapping"
+                                     : mode == "edit" ? "Edit Practice-Obligation Mapping"
+                                                       : "Add Practice-Obligation Mapping";
+    var permissions = ViewBag.Permissions as string[] ?? [];
+}
+<link rel="stylesheet" href="~/css/repository-actions.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/obligation-mapping-form.css" asp-append-version="true" />
+
+<div class="page-heading om-page-heading">
+    <div>
+        <p class="eyebrow">Repository Management / Practice-Obligation Mapping</p>
+        <h1 id="omPageTitle">@ViewData["Title"]</h1>
+    </div>
+</div>
+
+<div id="omMessage" class="form-message" hidden></div>
+
+<form id="obligationMappingForm" class="om-form-page">
+    <section class="om-card om-card-compact">
+        <div class="om-form-grid om-form-grid-compact">
+            <div class="form-field full">
+                <span class="form-field-label">Practice <span class="required">*</span></span>
+                <select id="om-requirement" name="requirementId" @(readonlyMode ? "disabled" : "") required></select>
+            </div>
+        </div>
+    </section>
+
+    <section class="om-card om-card-matrix">
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2>Mapped Statement Releases</h2>
+                <p>Select the Obligation that applies on each Statement / Release row.</p>
+            </div>
+        </div>
+        <div class="om-table-wrap">
+            <table class="om-table">
+                <colgroup>
+                    <col class="col-authority">
+                    <col class="col-artifact">
+                    <col class="col-release">
+                    <col class="col-stref">
+                    <col class="col-sttitle">
+                    <col class="col-obligation">
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Authority</th>
+                        <th>Artifact / Framework</th>
+                        <th>Release / Version</th>
+                        <th>Statement Reference</th>
+                        <th>Statement Title</th>
+                        <th>Mapped Obligation</th>
+                    </tr>
+                </thead>
+                <tbody id="om-matrix-body">
+                    <tr>
+                        <td colspan="6" class="empty">Pick a Practice to load mapped statement releases.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</form>
+
+<div class="om-action-bar">
+    <div class="om-action-bar-inner">
+        <button type="button" class="button" id="omCancel"><i class="fa-solid fa-arrow-left"></i> Cancel / Back</button>
+        @if (!readonlyMode && (permissions.Contains("ADD") || permissions.Contains("EDIT")))
+        {
+            <button type="button" class="button primary" id="omSave"><i class="fa-solid fa-save"></i> Save Mappings</button>
+        }
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        window.cmObligationMappingForm = {
+            api: "@ViewBag.ApiBaseUrl",
+            mode: "@mode",
+            id: @((int)ViewBag.MappingId),
+            requirementId: @((int)ViewBag.RequirementId),
+            returnUrl: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewBag.ReturnUrl as string ?? "")),
+            permissions: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(permissions))
+        };
+    </script>
+    <script src="~/js/obligation-mapping-form.js" asp-append-version="true"></script>
+}

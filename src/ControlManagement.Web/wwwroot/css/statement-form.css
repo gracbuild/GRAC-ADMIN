@@ -1,0 +1,112 @@
+.statement-page-heading {
+    align-items: flex-start;
+}
+
+.statement-message {
+    margin-bottom: 8px;
+}
+
+.statement-form-page {
+    display: grid;
+    gap: 10px;
+    padding-bottom: 12px;
+}
+
+.statement-card {
+    background: #fff;
+    border: 1px solid #dbe4f0;
+    border-radius: 8px;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+    padding: 12px 14px;
+}
+
+.statement-card-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    border-bottom: 1px solid #e7edf6;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+}
+
+.statement-card-heading h2 {
+    color: #172033;
+    font-size: 16px;
+    font-weight: 800;
+    margin: 0;
+}
+
+.statement-card-heading p {
+    color: #64728a;
+    font-size: 12px;
+    margin: 2px 0 0;
+}
+
+.statement-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 14px;
+}
+
+.statement-form-grid.context-grid {
+    grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.55fr);
+    align-items: start;
+}
+
+.statement-form-grid .form-field {
+    min-width: 0;
+}
+
+.statement-form-grid .form-field.full {
+    grid-column: 1 / -1;
+}
+
+.statement-form-grid input,
+.statement-form-grid select,
+.statement-form-grid textarea {
+    width: 100%;
+    border: 1px solid #ccd8e8;
+    border-radius: 8px;
+    color: #172033;
+    font-size: 13px;
+    min-height: 38px;
+    padding: 8px 10px;
+}
+
+.statement-form-grid textarea {
+    min-height: 82px;
+    resize: vertical;
+}
+
+.statement-form-grid input:disabled,
+.statement-form-grid select:disabled,
+.statement-form-grid textarea:disabled {
+    background: #f7f9fc;
+    color: #516078;
+}
+
+.statement-source-tree {
+    max-height: 220px;
+    overflow: auto;
+    padding: 8px;
+}
+
+.statement-source-tree .source-tree-list {
+    max-height: none;
+    overflow: visible;
+}
+
+.release-context-text {
+    color: #64728a;
+    display: block;
+    font-size: 12px;
+    line-height: 1.35;
+    margin-top: 6px;
+}
+
+@media (max-width: 900px) {
+    .statement-form-grid,
+    .statement-form-grid.context-grid {
+        grid-template-columns: 1fr;
+    }
+}

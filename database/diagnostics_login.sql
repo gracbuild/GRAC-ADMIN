@@ -1,0 +1,9 @@
+-- diagnostics_login.sql is no longer needed.  Auth runs entirely in the API
+-- project now; if you need to inspect a user, query GRAC_New.cm_user directly:
+--
+--   SELECT user_id, login_id, email, status,
+--          is_password_change_required, last_password_changed_dt,
+--          LEN(password_hash) AS password_hash_length,
+--          LEFT(password_hash, 6) AS password_hash_prefix
+--   FROM GRAC_New.cm_user
+--   ORDER BY entered_dt DESC;

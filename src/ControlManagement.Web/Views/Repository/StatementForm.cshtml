@@ -1,0 +1,106 @@
+@{
+    var mode = (ViewBag.Mode as string ?? "add").ToLowerInvariant();
+    var readonlyMode = mode == "view";
+    ViewData["Title"] = readonlyMode ? "View Source Statement" : mode == "edit" ? "Edit Source Statement" : "Add Source Statement";
+    var permissions = ViewBag.Permissions as string[] ?? [];
+}
+<link rel="stylesheet" href="~/css/repository-actions.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/statement-form.css" asp-append-version="true" />
+
+<div class="page-heading statement-page-heading">
+    <div>
+        <p class="eyebrow">Repository Management / Source Statements</p>
+        <h1 id="statementPageTitle">@ViewData["Title"]</h1>
+        <p>Capture the original regulatory statement under the selected release and source structure node.</p>
+    </div>
+    <div class="page-heading-actions">
+        <button class="button" id="statementBack" type="button"><i class="fa-solid fa-arrow-left"></i> Cancel / Back</button>
+        @if (!readonlyMode && (permissions.Contains("ADD") || permissions.Contains("EDIT")))
+        {
+            <button class="button primary" id="statementSave" type="button"><i class="fa-solid fa-save"></i> Save</button>
+        }
+    </div>
+</div>
+
+<div id="statementMessage" class="form-message statement-message" hidden></div>
+
+<form id="statementForm" class="statement-form-page">
+    <section class="statement-card">
+        <div class="statement-card-heading">
+            <div>
+                <h2>Statement Context</h2>
+                <p>Release and hierarchy placement for this source statement.</p>
+            </div>
+        </div>
+        <input id="field-releaseId" name="releaseId" type="hidden" />
+        <div class="statement-form-grid context-grid">
+            <div class="form-field source-node-field">
+                <span class="form-field-label">Source Structure Node <span class="required">*</span></span>
+                <input id="field-structureNodeId" name="structureNodeId" type="hidden" required />
+                <div class="source-tree-select statement-source-tree" id="statementSourceTree"></div>
+            </div>
+            <div class="form-field classification-field">
+                <span class="form-field-label">Statement Classification</span>
+                <select id="field-classificationId" name="classificationId"></select>
+                <small id="releaseContextText" class="release-context-text"></small>
+            </div>
+        </div>
+    </section>
+
+    <section class="statement-card">
+        <div class="statement-card-heading">
+            <div>
+                <h2>Statement Details</h2>
+                <p>Actual framework statement text and supporting attributes.</p>
+            </div>
+        </div>
+        <div class="statement-form-grid">
+            <div class="form-field">
+                <span class="form-field-label">Statement Reference <span class="required">*</span></span>
+                <input id="field-statementReference" name="statementReference" type="text" required />
+            </div>
+            <div class="form-field">
+                <span class="form-field-label">Statement Title</span>
+                <input id="field-statementTitle" name="statementTitle" type="text" />
+            </div>
+            <div class="form-field full">
+                <span class="form-field-label">Statement Text <span class="required">*</span></span>
+                <textarea id="field-statementText" name="statementText" rows="4" required></textarea>
+            </div>
+            <div class="form-field">
+                <span class="form-field-label">Statement Type</span>
+                <input id="field-statementType" name="statementType" type="text" />
+            </div>
+            @if (mode != "add")
+            {
+                <div class="form-field">
+                    <span class="form-field-label">Display Order</span>
+                    <input id="field-displayOrder" name="displayOrder" type="number" min="0" />
+                </div>
+                <div class="form-field">
+                    <span class="form-field-label">Status <span class="required">*</span></span>
+                    <select id="field-status" name="status" required></select>
+                </div>
+            }
+            <div class="form-field full">
+                <span class="form-field-label">Remarks</span>
+                <textarea id="field-remarks" name="remarks" rows="2"></textarea>
+            </div>
+        </div>
+    </section>
+</form>
+
+@section Scripts {
+    <script>
+        window.cmStatementForm = {
+            api: "@ViewBag.ApiBaseUrl",
+            mode: "@mode",
+            id: @((int)ViewBag.StatementId),
+            releaseId: @((int)ViewBag.ReleaseId),
+            nodeId: @((int)ViewBag.NodeId),
+            returnUrl: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewBag.ReturnUrl as string ?? "")),
+            permissions: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(permissions))
+        };
+    </script>
+    <script src="~/js/statement-form.js" asp-append-version="true"></script>
+}
