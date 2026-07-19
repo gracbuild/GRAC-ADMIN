@@ -1201,6 +1201,33 @@ mark.similar-highlight {
   background: #c8d2e1;
 }
 
+/* Folder-style indicator for Source Structure nodes in the mapping tree.
+   Framework Statements render as regular checkboxes; structure nodes render
+   as a folder icon to reinforce that they are not selectable. */
+.map-parent-dot.map-folder-dot {
+  width: auto;
+  height: auto;
+  background: transparent;
+  color: #6b7a90;
+  font-size: 12px;
+}
+
+.map-tree-row.leaf-statement {
+  background: #fdfefe;
+}
+
+.map-tree-row.parent > .map-node-text {
+  font-weight: 600;
+  color: #1f2d3d;
+}
+
+.map-hint {
+  display: block;
+  color: #6b7a90;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
 .map-node-text {
   overflow: hidden;
   text-overflow: ellipsis;

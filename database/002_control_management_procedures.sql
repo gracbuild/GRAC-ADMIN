@@ -1392,7 +1392,16 @@ END
    ELSE
      SELECT m.control_requirement_map_id Id,m.control_id ControlId,c.control_code Control,m.requirement_id RequirementIds,q.requirement_code Requirement,m.status Status FROM GRAC_New.control_requirement_map m JOIN GRAC_New.control c ON c.control_id=m.control_id JOIN GRAC_New.requirement q ON q.requirement_id=m.requirement_id WHERE (@p_id=0 OR m.control_requirement_map_id=@p_id) AND (@p_status='' OR m.status=@p_status) AND (@authority_id IS NULL OR EXISTS(SELECT 1 FROM GRAC_New.source_control_map srcmap JOIN GRAC_New.source_structure_node n ON n.structure_node_id=srcmap.structure_node_id JOIN GRAC_New.release r ON r.release_id=n.release_id JOIN GRAC_New.artifact a ON a.artifact_id=r.artifact_id WHERE srcmap.control_id=m.control_id AND srcmap.status='Active' AND a.authority_id=@authority_id)) ORDER BY c.control_code,q.requirement_code;
  END
- ELSE IF @p_entity_type='source-control-mappings' SELECT m.source_control_map_id Id,m.structure_node_id StructureNodeId,n.parent_node_id ParentNodeId,n.release_id ReleaseId,a.artifact_id ArtifactId,a.artifact_code ArtifactCode,a.artifact_name Artifact,r.version_no Release,n.node_reference Reference,n.node_title Title,n.node_type NodeType,n.description Description,n.display_order DisplayOrder,n.status NodeStatus,m.control_id ControlId,m.control_id ControlIds,c.control_code ControlCode,c.control_name ControlName,m.status Status,CASE WHEN EXISTS(SELECT 1 FROM GRAC_New.source_structure_node child WHERE child.parent_node_id=n.structure_node_id AND child.status='Active') THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END IsLeaf FROM GRAC_New.source_control_map m JOIN GRAC_New.source_structure_node n ON n.structure_node_id=m.structure_node_id JOIN GRAC_New.release r ON r.release_id=n.release_id JOIN GRAC_New.artifact a ON a.artifact_id=r.artifact_id JOIN GRAC_New.control c ON c.control_id=m.control_id WHERE (@p_id=0 OR m.source_control_map_id=@p_id) AND (@control_id IS NULL OR m.control_id=@control_id) AND (@authority_id IS NULL OR a.authority_id=@authority_id) AND (@p_status='' OR m.status=@p_status) ORDER BY a.artifact_code,r.version_no,n.node_level,n.display_order,n.node_reference;
+ -- "Practices - Statement Mapping" now evaluates mappings at the Framework
+ -- Statement level and against Practices (requirements), not Controls.  Rows
+ -- come from framework_statement_requirement_map (Statement -> Practice) and
+ -- join through framework_statement -> source_structure_node so callers still
+ -- receive StructureNodeId / Reference / Title context for the Release -> Source
+ -- Structure -> Framework Statement tree.  The legacy source_control_map table
+ -- is preserved for backward compatibility with the in-form Source Structure
+ -- section on Add/Edit Control (which continues to write structure_node_id
+ -- rows keyed to control_id).
+ ELSE IF @p_entity_type='source-control-mappings' SELECT m.statement_requirement_map_id Id,fs.framework_statement_id FrameworkStatementId,fs.statement_reference StatementReference,fs.statement_title StatementTitle,fs.statement_text StatementText,fs.classification_id ClassificationId,fs.structure_node_id StructureNodeId,n.parent_node_id ParentNodeId,n.release_id ReleaseId,a.artifact_id ArtifactId,a.artifact_code ArtifactCode,a.artifact_name Artifact,r.version_no Release,n.node_reference Reference,n.node_title Title,n.node_type NodeType,n.description Description,fs.display_order DisplayOrder,fs.status StatementStatus,n.status NodeStatus,m.requirement_id RequirementId,m.requirement_id RequirementIds,q.requirement_code Code,q.requirement_name Name,q.requirement_code ControlCode,q.requirement_name ControlName,q.requirement_code PracticeCode,q.requirement_name PracticeName,m.status Status,CAST(1 AS BIT) IsLeaf FROM GRAC_New.framework_statement_requirement_map m JOIN GRAC_New.framework_statement fs ON fs.framework_statement_id=m.framework_statement_id JOIN GRAC_New.source_structure_node n ON n.structure_node_id=fs.structure_node_id JOIN GRAC_New.release r ON r.release_id=fs.release_id JOIN GRAC_New.artifact a ON a.artifact_id=r.artifact_id JOIN GRAC_New.requirement q ON q.requirement_id=m.requirement_id WHERE (@p_id=0 OR m.statement_requirement_map_id=@p_id) AND (@requirement_id IS NULL OR m.requirement_id=@requirement_id) AND (@framework_statement_id IS NULL OR m.framework_statement_id=@framework_statement_id) AND (@authority_id IS NULL OR a.authority_id=@authority_id) AND (@p_status='' OR m.status=@p_status) ORDER BY a.artifact_code,r.version_no,n.node_level,n.display_order,n.node_reference,fs.display_order,fs.statement_reference;
  ELSE IF @p_entity_type='applicability-rules' SELECT ar.applicability_rule_id Id,ar.artifact_id ArtifactId,ar.release_id ReleaseId,ar.rule_name Name,JSON_VALUE(ar.rule_expression_json,'$.expression') Expression,ar.priority_no Priority,ar.outcome Outcome,ar.status Status FROM GRAC_New.applicability_rule ar WHERE (@p_id=0 OR ar.applicability_rule_id=@p_id) AND (@authority_id IS NULL OR EXISTS(SELECT 1 FROM GRAC_New.artifact a WHERE a.artifact_id=ar.artifact_id AND a.authority_id=@authority_id)) AND (@p_status='' OR ar.status=@p_status) ORDER BY ar.priority_no,ar.rule_name;
  ELSE IF @p_entity_type='changes' SELECT change_event_id Id,entity_type EntityType,entity_id EntityId,change_type ChangeType,change_summary Summary,effective_dt EffectiveDate,severity Severity,status Status FROM GRAC_New.change_event WHERE (@p_id=0 OR change_event_id=@p_id) AND (@p_status='' OR status=@p_status) ORDER BY entered_dt DESC;
  ELSE IF @p_entity_type='impact-analysis' SELECT impact_analysis_id Id,change_event_id ChangeEventId,impacted_entity_type ImpactedEntityType,impacted_entity_id ImpactedEntityId,organization_id OrganizationId,impact_summary Summary,recommended_action RecommendedAction,status Status FROM GRAC_New.impact_analysis WHERE (@p_id=0 OR impact_analysis_id=@p_id) AND (@p_status='' OR status=@p_status) ORDER BY entered_dt DESC;
@@ -2031,7 +2040,22 @@ BEGIN
    ELSE IF @p_entity_type='framework-statements' UPDATE GRAC_New.framework_statement SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE framework_statement_id=@p_id;
    ELSE IF @p_entity_type='applicability-rules' UPDATE GRAC_New.applicability_rule SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE applicability_rule_id=@p_id;
    ELSE IF @p_entity_type='control-requirement-mappings' UPDATE GRAC_New.control_requirement_map SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_requirement_map_id=@p_id;
-   ELSE IF @p_entity_type='source-control-mappings' UPDATE GRAC_New.source_control_map SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE source_control_map_id=@p_id;
+   ELSE IF @p_entity_type='source-control-mappings'
+   BEGIN
+     -- The Practices - Statement Mapping tree retires
+     -- framework_statement_requirement_map rows; the legacy tree retires
+     -- framework_statement_control_map rows; and the Add/Edit Control in-form
+     -- section retires source_control_map rows.  The @p_id in each case comes
+     -- from that table's identity, so try each in order and stop as soon as a
+     -- row is updated — this keeps overlapping identity ranges safe.
+     UPDATE GRAC_New.framework_statement_requirement_map SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE statement_requirement_map_id=@p_id AND status='Active';
+     IF @@ROWCOUNT=0
+     BEGIN
+       UPDATE GRAC_New.framework_statement_control_map SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE statement_control_map_id=@p_id AND status='Active';
+       IF @@ROWCOUNT=0
+         UPDATE GRAC_New.source_control_map SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE source_control_map_id=@p_id;
+     END
+   END
     ELSE IF @p_entity_type='changes' UPDATE GRAC_New.change_event SET status='Archived',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE change_event_id=@p_id;
     ELSE IF @p_entity_type='impact-analysis' UPDATE GRAC_New.impact_analysis SET status='Archived',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE impact_analysis_id=@p_id;
     ELSE IF @p_entity_type='notifications' UPDATE GRAC_New.notification SET status='Archived',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE notification_id=@p_id;
@@ -2904,21 +2928,80 @@ ELSE IF @p_entity_type='obligation-mappings'
  END
  ELSE IF @p_entity_type='source-control-mappings'
  BEGIN
+   -- Practices - Statement Mapping.  Payload variants:
+   --   frameworkStatementId + requirementIds -> framework_statement_requirement_map (new UI)
+   --   frameworkStatementId + controlIds     -> framework_statement_control_map     (legacy)
+   --   structureNodeId      + controlIds     -> source_control_map                  (Add/Edit Control section)
+   DECLARE @map_statement_id BIGINT=TRY_CONVERT(BIGINT,JSON_VALUE(@p_payload,'$.frameworkStatementId'));
    DECLARE @map_structure_id BIGINT=TRY_CONVERT(BIGINT,JSON_VALUE(@p_payload,'$.structureNodeId'));
-   IF EXISTS(SELECT 1 FROM GRAC_New.source_structure_node WHERE parent_node_id=@map_structure_id AND status='Active') THROW 50015,'Only leaf-level source structure nodes can be mapped to a control.',1;
-   IF @p_id=0
+   DECLARE @has_requirement_ids BIT=CASE WHEN ISJSON(JSON_QUERY(@p_payload,'$.requirementIds'))=1 THEN 1 ELSE 0 END;
+   IF @map_statement_id IS NULL AND @map_structure_id IS NULL
+     THROW 50015,'A Framework Statement (frameworkStatementId) or Source Structure node (structureNodeId) is required to save a mapping.',1;
+   IF @map_statement_id IS NOT NULL AND @has_requirement_ids=1
    BEGIN
-     UPDATE m SET status='Active',release_id=n.release_id,artifact_id=r.artifact_id,updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
-     FROM GRAC_New.source_control_map m JOIN OPENJSON(@p_payload,'$.controlIds') j ON TRY_CONVERT(BIGINT,j.[value])=m.control_id JOIN GRAC_New.source_structure_node n ON n.structure_node_id=@map_structure_id JOIN GRAC_New.release r ON r.release_id=n.release_id
-     WHERE m.structure_node_id=@map_structure_id AND m.status<>'Active';
-     INSERT GRAC_New.source_control_map(structure_node_id,control_id,release_id,artifact_id,status,entered_by)
-     SELECT @map_structure_id,TRY_CONVERT(BIGINT,j.[value]),n.release_id,r.artifact_id,COALESCE(JSON_VALUE(@p_payload,'$.status'),'Active'),@p_usr_id
-     FROM OPENJSON(@p_payload,'$.controlIds') j JOIN GRAC_New.source_structure_node n ON n.structure_node_id=@map_structure_id JOIN GRAC_New.release r ON r.release_id=n.release_id
-     WHERE NOT EXISTS(SELECT 1 FROM GRAC_New.source_control_map m WHERE m.structure_node_id=@map_structure_id AND m.control_id=TRY_CONVERT(BIGINT,j.[value]));
-     SELECT @new_id=COALESCE(TRY_CONVERT(BIGINT,SCOPE_IDENTITY()),(SELECT TOP 1 m.source_control_map_id FROM GRAC_New.source_control_map m JOIN OPENJSON(@p_payload,'$.controlIds') j ON TRY_CONVERT(BIGINT,j.[value])=m.control_id WHERE m.structure_node_id=@map_structure_id ORDER BY m.source_control_map_id DESC));
+     IF NOT EXISTS(SELECT 1 FROM GRAC_New.framework_statement WHERE framework_statement_id=@map_statement_id AND status='Active')
+       THROW 50016,'The selected Framework Statement is invalid or inactive.',1;
+     IF @p_id=0
+     BEGIN
+       UPDATE m SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.framework_statement_requirement_map m
+       JOIN OPENJSON(@p_payload,'$.requirementIds') j ON TRY_CONVERT(BIGINT,j.[value])=m.requirement_id
+       WHERE m.framework_statement_id=@map_statement_id AND m.status<>'Active';
+       INSERT GRAC_New.framework_statement_requirement_map(framework_statement_id,requirement_id,status,entered_by)
+       SELECT @map_statement_id,TRY_CONVERT(BIGINT,j.[value]),COALESCE(JSON_VALUE(@p_payload,'$.status'),'Active'),@p_usr_id
+       FROM OPENJSON(@p_payload,'$.requirementIds') j
+       WHERE TRY_CONVERT(BIGINT,j.[value]) IS NOT NULL
+         AND NOT EXISTS(SELECT 1 FROM GRAC_New.framework_statement_requirement_map m WHERE m.framework_statement_id=@map_statement_id AND m.requirement_id=TRY_CONVERT(BIGINT,j.[value]));
+       SELECT @new_id=COALESCE(TRY_CONVERT(BIGINT,SCOPE_IDENTITY()),(SELECT TOP 1 m.statement_requirement_map_id FROM GRAC_New.framework_statement_requirement_map m JOIN OPENJSON(@p_payload,'$.requirementIds') j ON TRY_CONVERT(BIGINT,j.[value])=m.requirement_id WHERE m.framework_statement_id=@map_statement_id ORDER BY m.statement_requirement_map_id DESC));
+     END
+     ELSE UPDATE GRAC_New.framework_statement_requirement_map
+       SET framework_statement_id=@map_statement_id,
+           requirement_id=TRY_CONVERT(BIGINT,JSON_VALUE(@p_payload,'$.requirementIds[0]')),
+           status=COALESCE(JSON_VALUE(@p_payload,'$.status'),status),
+           updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       WHERE statement_requirement_map_id=@p_id;
    END
-   ELSE UPDATE m SET structure_node_id=@map_structure_id,control_id=JSON_VALUE(@p_payload,'$.controlIds[0]'),release_id=n.release_id,artifact_id=r.artifact_id,status=COALESCE(JSON_VALUE(@p_payload,'$.status'),m.status),updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
-     FROM GRAC_New.source_control_map m JOIN GRAC_New.source_structure_node n ON n.structure_node_id=@map_structure_id JOIN GRAC_New.release r ON r.release_id=n.release_id WHERE m.source_control_map_id=@p_id;
+   ELSE IF @map_statement_id IS NOT NULL
+   BEGIN
+     IF NOT EXISTS(SELECT 1 FROM GRAC_New.framework_statement WHERE framework_statement_id=@map_statement_id AND status='Active')
+       THROW 50016,'The selected Framework Statement is invalid or inactive.',1;
+     IF @p_id=0
+     BEGIN
+       UPDATE m SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.framework_statement_control_map m
+       JOIN OPENJSON(@p_payload,'$.controlIds') j ON TRY_CONVERT(BIGINT,j.[value])=m.control_id
+       WHERE m.framework_statement_id=@map_statement_id AND m.status<>'Active';
+       INSERT GRAC_New.framework_statement_control_map(framework_statement_id,control_id,status,entered_by)
+       SELECT @map_statement_id,TRY_CONVERT(BIGINT,j.[value]),COALESCE(JSON_VALUE(@p_payload,'$.status'),'Active'),@p_usr_id
+       FROM OPENJSON(@p_payload,'$.controlIds') j
+       WHERE TRY_CONVERT(BIGINT,j.[value]) IS NOT NULL
+         AND NOT EXISTS(SELECT 1 FROM GRAC_New.framework_statement_control_map m WHERE m.framework_statement_id=@map_statement_id AND m.control_id=TRY_CONVERT(BIGINT,j.[value]));
+       SELECT @new_id=COALESCE(TRY_CONVERT(BIGINT,SCOPE_IDENTITY()),(SELECT TOP 1 m.statement_control_map_id FROM GRAC_New.framework_statement_control_map m JOIN OPENJSON(@p_payload,'$.controlIds') j ON TRY_CONVERT(BIGINT,j.[value])=m.control_id WHERE m.framework_statement_id=@map_statement_id ORDER BY m.statement_control_map_id DESC));
+     END
+     ELSE UPDATE GRAC_New.framework_statement_control_map
+       SET framework_statement_id=@map_statement_id,
+           control_id=TRY_CONVERT(BIGINT,JSON_VALUE(@p_payload,'$.controlIds[0]')),
+           status=COALESCE(JSON_VALUE(@p_payload,'$.status'),status),
+           updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       WHERE statement_control_map_id=@p_id;
+   END
+   ELSE
+   BEGIN
+     IF EXISTS(SELECT 1 FROM GRAC_New.source_structure_node WHERE parent_node_id=@map_structure_id AND status='Active') THROW 50015,'Only leaf-level source structure nodes can be mapped to a control.',1;
+     IF @p_id=0
+     BEGIN
+       UPDATE m SET status='Active',release_id=n.release_id,artifact_id=r.artifact_id,updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.source_control_map m JOIN OPENJSON(@p_payload,'$.controlIds') j ON TRY_CONVERT(BIGINT,j.[value])=m.control_id JOIN GRAC_New.source_structure_node n ON n.structure_node_id=@map_structure_id JOIN GRAC_New.release r ON r.release_id=n.release_id
+       WHERE m.structure_node_id=@map_structure_id AND m.status<>'Active';
+       INSERT GRAC_New.source_control_map(structure_node_id,control_id,release_id,artifact_id,status,entered_by)
+       SELECT @map_structure_id,TRY_CONVERT(BIGINT,j.[value]),n.release_id,r.artifact_id,COALESCE(JSON_VALUE(@p_payload,'$.status'),'Active'),@p_usr_id
+       FROM OPENJSON(@p_payload,'$.controlIds') j JOIN GRAC_New.source_structure_node n ON n.structure_node_id=@map_structure_id JOIN GRAC_New.release r ON r.release_id=n.release_id
+       WHERE NOT EXISTS(SELECT 1 FROM GRAC_New.source_control_map m WHERE m.structure_node_id=@map_structure_id AND m.control_id=TRY_CONVERT(BIGINT,j.[value]));
+       SELECT @new_id=COALESCE(TRY_CONVERT(BIGINT,SCOPE_IDENTITY()),(SELECT TOP 1 m.source_control_map_id FROM GRAC_New.source_control_map m JOIN OPENJSON(@p_payload,'$.controlIds') j ON TRY_CONVERT(BIGINT,j.[value])=m.control_id WHERE m.structure_node_id=@map_structure_id ORDER BY m.source_control_map_id DESC));
+     END
+     ELSE UPDATE m SET structure_node_id=@map_structure_id,control_id=JSON_VALUE(@p_payload,'$.controlIds[0]'),release_id=n.release_id,artifact_id=r.artifact_id,status=COALESCE(JSON_VALUE(@p_payload,'$.status'),m.status),updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.source_control_map m JOIN GRAC_New.source_structure_node n ON n.structure_node_id=@map_structure_id JOIN GRAC_New.release r ON r.release_id=n.release_id WHERE m.source_control_map_id=@p_id;
+   END
  END
  ELSE IF @p_entity_type='applicability-rules' BEGIN IF @p_id=0 BEGIN INSERT GRAC_New.applicability_rule(artifact_id,release_id,rule_name,rule_expression_json,priority_no,outcome,status,entered_by) VALUES(NULLIF(JSON_VALUE(@p_payload,'$.artifactId'),''),NULLIF(JSON_VALUE(@p_payload,'$.releaseId'),''),JSON_VALUE(@p_payload,'$.name'),JSON_MODIFY('{}','$.expression',JSON_VALUE(@p_payload,'$.expression')),COALESCE(JSON_VALUE(@p_payload,'$.priority'),100),COALESCE(JSON_VALUE(@p_payload,'$.outcome'),'Applicable'),COALESCE(JSON_VALUE(@p_payload,'$.status'),'Active'),@p_usr_id); SET @new_id=SCOPE_IDENTITY(); END ELSE UPDATE GRAC_New.applicability_rule SET artifact_id=NULLIF(JSON_VALUE(@p_payload,'$.artifactId'),''),release_id=NULLIF(JSON_VALUE(@p_payload,'$.releaseId'),''),rule_name=JSON_VALUE(@p_payload,'$.name'),rule_expression_json=JSON_MODIFY('{}','$.expression',JSON_VALUE(@p_payload,'$.expression')),priority_no=COALESCE(JSON_VALUE(@p_payload,'$.priority'),priority_no),outcome=COALESCE(JSON_VALUE(@p_payload,'$.outcome'),outcome),status=COALESCE(JSON_VALUE(@p_payload,'$.status'),status),updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE applicability_rule_id=@p_id; END
   ELSE IF @p_entity_type='changes' BEGIN IF @p_id=0 BEGIN INSERT GRAC_New.change_event(entity_type,entity_id,change_type,change_summary,effective_dt,severity,status,entered_by) VALUES(JSON_VALUE(@p_payload,'$.entityType'),JSON_VALUE(@p_payload,'$.entityId'),JSON_VALUE(@p_payload,'$.changeType'),JSON_VALUE(@p_payload,'$.summary'),JSON_VALUE(@p_payload,'$.effectiveDate'),COALESCE(JSON_VALUE(@p_payload,'$.severity'),'Medium'),COALESCE(JSON_VALUE(@p_payload,'$.status'),'Open'),@p_usr_id); SET @new_id=SCOPE_IDENTITY(); END ELSE UPDATE GRAC_New.change_event SET entity_type=JSON_VALUE(@p_payload,'$.entityType'),entity_id=JSON_VALUE(@p_payload,'$.entityId'),change_type=JSON_VALUE(@p_payload,'$.changeType'),change_summary=JSON_VALUE(@p_payload,'$.summary'),effective_dt=JSON_VALUE(@p_payload,'$.effectiveDate'),severity=COALESCE(JSON_VALUE(@p_payload,'$.severity'),severity),status=COALESCE(JSON_VALUE(@p_payload,'$.status'),status),updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE change_event_id=@p_id; END

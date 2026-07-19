@@ -13,7 +13,7 @@ public sealed record RepositoryScreen(string Key, string Title, string Descripti
         new("requirements","Practices","Atomic assessable compliance practices","list-check",["Code","Name","Statement","Status"]),
         new("obligations","Obligation Master","Reusable obligations with execution frequency, retention and evidence","calendar-check",["ObligationName","ExecutionFrequency","AssuranceFrequency","RetentionPeriod","EvidenceCount","MappingCount","Status"]),
         new("obligation-mappings","Practices - Obligation Mapping","Mapped obligations grouped by Obligation; expand a row to see its Practice/Release mappings","list-tree",["ObligationName","ExecutionFrequency","AssuranceFrequency","RetentionPeriod","EvidenceCount","MappingCount","Status"]),
-        new("source-control-mappings","Practices - Statement Mapping","Map practices to source statements","sitemap",["SourceReference","Control","Status"]),
+        new("source-control-mappings","Practices - Statement Mapping","Map Practices to Framework Statements grouped under their Source Structure hierarchy","sitemap",["SourceReference","StatementReference","StatementTitle","PracticeName","Status"]),
         new("user-management","User Management","Manage Repository Management users and role assignments","users",["UserName","LoginId","Email","Roles","Status"]),
         new("role-management","Role Management","Manage Repository Management roles","user-tag",["RoleName","Description","Status"]),
         new("menu-management","Menu Management","Manage database-driven Repository Management navigation","bars",["MenuName","MenuCode","ParentMenu","RouteUrl","DisplayOrder","Status"]),

@@ -24,7 +24,13 @@ public sealed class RepositoryCommandValidator
         ["obligation-mappings"] = ["obligationId", "requirementId", "releaseId"],
         ["obligation-mapping-bulk"] = ["requirementId"],
         ["control-requirement-mappings"] = ["controlId"],
-        ["source-control-mappings"] = ["structureNodeId", "controlIds"],
+        // 'source-control-mappings' now stores mappings against Framework Statements
+        // (framework_statement_control_map).  The legacy 'structureNodeId' payload
+        // path is still accepted by the SP for backward compatibility (used by the
+        // in-form Source Structure section on Add/Edit Control), so this required
+        // list only asserts the presence of the target controls.  Presence of
+        // frameworkStatementId OR structureNodeId is enforced at the SP layer.
+        ["source-control-mappings"] = ["controlIds"],
         ["applicability-rules"] = ["name", "expression", "priority", "outcome"],
         ["user-management"] = ["userName", "loginId", "email"],
         ["role-management"] = ["roleName"],

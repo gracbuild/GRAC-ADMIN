@@ -35,11 +35,7 @@
   const pathBase = (window.cmPathBase || "").replace(/\/$/, "");
   const paginatedAreas = new Set(["user-management","role-management","menu-management","role-permissions"]);
   const state = { id: 0, mode: "add", lookups: {}, records: [], auditPage: 1, auditPageSize: Number(auditPageSize?.value || 25), gridPage: 1, gridPageSize: Number(gridPageSize?.value || 25), gridTotal: 0, changeModules: [], loadVersion: 0, collapsed: new Set(), formContext: {}, navigationCode: query.get("code") || "", navigationContext: null, similarControls: [], similarFilters: {}, similarSort: { key: "MatchCount", direction: "desc" }, frameworkStatementNodes: [], frameworkStatementReleases: [] };
-  // "Practices - Statement Mapping" screen state.  The subject of the mapping is
-  // a Practice (requirements table) — the property is named practiceId here to
-  // match the on-screen label.  Mapping is persisted via
-  // framework_statement_requirement_map (Statement -> Practice).
-  const sourceMapState = { practiceId: "", practice: null, nodes: [], statements: [], mapped: [], collapsed: new Set(), leftSelected: new Set(), rightSelected: new Set() };
+  const sourceMapState = { controlId: "", control: null, nodes: [], statements: [], mapped: [], collapsed: new Set(), leftSelected: new Set(), rightSelected: new Set() };
   const controlSourceMapState = { nodes: [], releases: [], artifacts: [], selected: new Set(), existing: new Map(), collapsed: new Set(), readonly: false };
   const frameworkStatementTreeState = { nodes: [], selected: "", collapsed: new Set(), readonly: false };
   const obligationState = { requirement: null, contexts: [] };
@@ -71,7 +67,7 @@
     "obligations": [text("obligationName","Obligation Name",true),select("executionFrequencyId","Execution Frequency","frequency-master",true),text("retentionRequirement","Retention Period"),area("remarks","Remarks"),tags("keywords","Keywords",false,{ placeholder:"access review, KYC, vendor due diligence, evidence review" }),{ name:"evidenceRequirements", label:"Evidence Details", type:"evidence-grid", full:true },select("status","Status","status-active",true)],
     "obligation-mappings": [select("obligationId","Obligation","obligations",true,{ full:true }),select("requirementId","Requirement","requirements",true),select("releaseId","Release","releases",true),select("status","Status","status-active",true)],
     "control-requirement-mappings": [select("controlId","Control","controls",true,{ full:true }),select("requirementIds","Requirements","requirements",false,{ multiple:true, compact:true, full:true, search:true, listbox:true })],
-    "source-control-mappings": [select("frameworkStatementId","Framework Statement","framework-statements",true),select("requirementIds","Practices","requirements",true,{ multiple:true, full:true }),select("status","Status","status-active",true)],
+    "source-control-mappings": [select("frameworkStatementId","Framework Statement","framework-statements",true),select("controlIds","Controls","controls",true,{ multiple:true, full:true }),select("status","Status","status-active",true)],
     "user-management": [text("userName","User Name",true),text("loginId","Login ID",true),text("email","Email",true,{ inputType:"email" }),select("roleIds","Roles","cm-roles",false,{ multiple:true, compact:true, full:true, search:true, listbox:true }),area("remarks","Remarks"),select("status","Status","status-active",true)],
     "role-management": [text("roleName","Role Name",true),area("description","Description"),select("status","Status","status-active",true)],
     "menu-management": [select("parentMenuId","Parent Menu","cm-menus"),text("menuName","Menu Name",true),text("menuCode","Menu Code",true),text("routeUrl","Route / URL"),number("displayOrder","Display Order",true,{ min:"0" }),text("icon","Icon"),select("status","Status","status-active",true)],
@@ -1536,21 +1532,24 @@
     const html = flat.map(({ row, depth, hasChildren }) => {
       const nodeId = String(row.Id);
       const collapsed = requirementMapState.collapsed.has(nodeId);
-      // Always render the Source Structure / Release / Authority row as a folder.
-      // Framework Statements are rendered as leaf rows underneath so users can see
-      // and toggle them individually — do not swap the node for a "backing"
-      // statement, and do not hide mirror/placeholder statements: users asked for
-      // statements to be visible alongside source structure nodes.
+      const sourceStatement = sourceStatementBacking(row, statementsByNode, hasChildren);
+      if (sourceStatement) {
+        return renderRequirementStatementRow(sourceStatement, depth, row.Title || "Framework Statement", row.Reference || "", "source-statement");
+      }
       const toggle = hasChildren ? `<button type="button" class="req-tree-toggle" data-req-toggle="${escapeHtml(nodeId)}"><i class="fa-solid fa-chevron-${collapsed ? "right" : "down"}"></i></button>` : `<span class="tree-toggle-spacer"></span>`;
       const folderIcon = row.IsAuthorityGroup ? "fa-building-columns" : row.IsReleaseGroup ? "fa-tags" : "fa-folder";
       const nodeRow = `<div class="req-tree-source${row.IsAuthorityGroup ? " authority" : row.IsReleaseGroup ? " release" : ""}" style="--tree-depth:${depth}">${toggle}<i class="fa-solid ${folderIcon}"></i><span><strong>${escapeHtml(row.Reference || "")}</strong>${row.Reference ? " - " : ""}${escapeHtml(row.Title || "")}</span></div>`;
       const statementRows = (statementsByNode[nodeId] || [])
         .filter(statement => {
+          if (isMirrorFrameworkStatement(statement, row)) return false;
+          if (isPlaceholderFrameworkStatement(statement, row)) return false;
           if (!search) return true;
           return `${statement.StatementReference || ""} ${statement.StatementTitle || ""} ${statement.StatementText || ""} ${statement.ArtifactCode || ""} ${statement.Release || ""}`.toLowerCase().includes(search);
         })
-        .map(statement => renderRequirementStatementRow(statement, depth + 1))
-        .join("");
+        .map(statement => {
+          const mirror = isMirrorFrameworkStatement(statement, row);
+          return renderRequirementStatementRow(statement, depth + 1, mirror ? "Framework Statement" : null, null, mirror ? "mirror" : "");
+        }).join("");
       return `${nodeRow}${collapsed ? "" : statementRows}`;
     }).join("");
     host.innerHTML = html || `<div class="similar-empty">No framework statements found.</div>`;
@@ -1567,7 +1566,7 @@
     requirementMapState.statements = statements;
     const section = document.createElement("section");
     section.className = "requirement-control-map full";
-    section.innerHTML = `<div class="requirement-control-head"><div><strong>Framework Statement Mapping</strong><small id="reqSelectedCount">0 selected</small></div><input type="search" id="requirementControlSearch" placeholder="Search source structure or framework statements..."></div><div class="control-source-note">Release → Source Structure → Framework Statements. Source Structure nodes act as folders; select Framework Statements to map them to this Requirement.</div><div id="requirementControlTree" class="requirement-control-tree"></div>`;
+    section.innerHTML = `<div class="requirement-control-head"><div><strong>Framework Statement Mapping</strong><small id="reqSelectedCount">0 selected</small></div><input type="search" id="requirementControlSearch" placeholder="Search source structure or framework statements..."></div><div class="control-source-note">Source Structure nodes are for hierarchy only. Select Framework Statements to map them to this Requirement.</div><div id="requirementControlTree" class="requirement-control-tree"></div>`;
     fieldsHost.append(section);
     renderRequirementControlTree();
   }
@@ -2546,8 +2545,8 @@
   function sourceMapShell() {
     panel.innerHTML = `<div class="source-map-screen">
       <div class="source-map-top">
-        <label><span>Practice</span><select id="mappingControl"><option value="">Select practice...</option>${(state.lookups.requirements || []).map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("")}</select></label>
-        <div class="control-summary" id="mappingControlSummary"><span>Select a Practice to manage its Framework Statement mappings.</span></div>
+        <label><span>Control</span><select id="mappingControl"><option value="">Select control...</option>${(state.lookups.controls || []).map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("")}</select></label>
+        <div class="control-summary" id="mappingControlSummary"><span>Select a control to manage mappings.</span></div>
       </div>
       <div class="source-map-message" id="sourceMapMessage" hidden></div>
       <div class="source-map-actions"><button type="button" class="button small" data-expand-all>Expand all</button><button type="button" class="button small" data-collapse-all>Collapse all</button></div>
@@ -2618,9 +2617,12 @@
         ? `<input type="checkbox" data-map-node="${escapeHtml(id)}" data-statement-id="${escapeHtml(row.__statementId)}" data-side="${side}"${selected.has(id) ? " checked" : ""}>`
         : `<span class="map-parent-dot map-folder-dot" title="Source Structure node - only Framework Statements can be mapped."><i class="fa-solid fa-folder"></i></span>`;
       const label = isStatement ? statementNodeLabel(row.__statement) : sourceNodeLabel(row);
+      const kindPill = isStatement
+        ? `<span class="map-kind-pill statement">Statement</span>`
+        : `<span class="map-kind-pill folder">Source Structure</span>`;
       const mapMeta = isStatement ? mappedByStatement.get(row.__statementId) : null;
       const statusPill = side === "right" && mapMeta ? `<span class="map-pill">${escapeHtml(mapMeta.Status)}</span>` : "";
-      return `<div class="map-tree-row${!isStatement ? " parent" : " leaf-statement"}" style="--tree-depth:${depth}" data-node-id="${escapeHtml(id)}">${toggle}${checkbox}<span class="map-node-text" title="${escapeHtml(label)}">${escapeHtml(label)}</span>${statusPill}</div>`;
+      return `<div class="map-tree-row${!isStatement ? " parent" : " leaf-statement"}" style="--tree-depth:${depth}" data-node-id="${escapeHtml(id)}">${toggle}${checkbox}<span class="map-node-text" title="${escapeHtml(label)}">${escapeHtml(label)}</span>${kindPill}${statusPill}</div>`;
     }).join("") : `<div class="map-empty">No framework statements found</div>`;
   }
   function refreshMappingTrees() {
@@ -2628,19 +2630,16 @@
     const mappedStatementIds = new Set(sourceMapState.mapped
       .filter(row => row.Status === "Active" && row.FrameworkStatementId != null)
       .map(row => String(row.FrameworkStatementId)));
-    // Both sides show the same Release -> Source Structure -> Framework Statement
-    // hierarchy; left keeps only unmapped statement leaves, right keeps only mapped
-    // statement leaves, and includeAncestors preserves the shared parent context.
+    // Left: only unmapped statements (plus their ancestor structure nodes for context).
+    // Right: only mapped statements (plus ancestors).
     const unmappedStatementRecordIds = new Set(records
       .filter(row => row.__kind === "statement" && !mappedStatementIds.has(row.__statementId))
       .map(row => String(row.Id)));
     const mappedStatementRecordIds = new Set(records
       .filter(row => row.__kind === "statement" && mappedStatementIds.has(row.__statementId))
       .map(row => String(row.Id)));
-    const unmappedRecords = includeAncestors(records, unmappedStatementRecordIds)
-      .filter(row => row.__kind !== "statement" || unmappedStatementRecordIds.has(String(row.Id)));
-    const mappedRecords = includeAncestors(records, mappedStatementRecordIds)
-      .filter(row => row.__kind !== "statement" || mappedStatementRecordIds.has(String(row.Id)));
+    const unmappedRecords = includeAncestors(records, unmappedStatementRecordIds).filter(row => row.__kind !== "statement" || unmappedStatementRecordIds.has(String(row.Id)));
+    const mappedRecords = includeAncestors(records, mappedStatementRecordIds).filter(row => row.__kind !== "statement" || mappedStatementRecordIds.has(String(row.Id)));
     renderMappingTree(document.querySelector("#leftTree"), unmappedRecords, "left");
     renderMappingTree(document.querySelector("#rightTree"), mappedRecords, "right");
     document.querySelector("#leftCount").textContent = `${sourceMapState.leftSelected.size} selected`;
@@ -2651,30 +2650,30 @@
     el.textContent = text; el.hidden = false; el.classList.toggle("success", ok);
   }
   async function loadSourceMappings() {
-    if (!sourceMapState.practiceId) return;
-    sourceMapState.practice = (await fetchRows("requirements", { id: sourceMapState.practiceId }))[0] || null;
+    if (!sourceMapState.controlId) return;
+    sourceMapState.control = (await fetchRows("controls", { id: sourceMapState.controlId }))[0] || null;
     // Reuse the existing Framework Statement query so both the source-structure
     // hierarchy AND the statements that live under it are available for the tree.
     const [nodes, statements, mapped] = await Promise.all([
       fetchRows("source-structure", { status: "Active" }),
       fetchRows("framework-statements", { status: "Active" }),
-      fetchRows("source-control-mappings", { requirementId: sourceMapState.practiceId, status: "Active" })
+      fetchRows("source-control-mappings", { controlId: sourceMapState.controlId, status: "Active" })
     ]);
     sourceMapState.nodes = nodes;
     sourceMapState.statements = statements;
     sourceMapState.mapped = mapped;
     sourceMapState.leftSelected.clear(); sourceMapState.rightSelected.clear();
-    const p = sourceMapState.practice;
-    document.querySelector("#mappingControlSummary").innerHTML = p ? `<strong>${escapeHtml(p.Code)}</strong><span>${escapeHtml(p.Name)}</span><small>Status: ${escapeHtml(p.Status)}</small>` : `<span>Select a Practice to manage its Framework Statement mappings.</span>`;
+    const c = sourceMapState.control;
+    document.querySelector("#mappingControlSummary").innerHTML = c ? `<strong>${escapeHtml(c.Code)}</strong><span>${escapeHtml(c.Name)}</span><small>Status: ${escapeHtml(c.Status)}</small>` : `<span>Select a control to manage mappings.</span>`;
     refreshMappingTrees();
   }
   async function initSourceControlMappings() {
     sourceMapShell();
-    document.querySelector("#mappingControl").addEventListener("change", async event => { sourceMapState.practiceId = event.target.value; await loadSourceMappings(); });
+    document.querySelector("#mappingControl").addEventListener("change", async event => { sourceMapState.controlId = event.target.value; await loadSourceMappings(); });
     document.querySelector("#leftSearch").addEventListener("input", refreshMappingTrees);
     document.querySelector("#rightSearch").addEventListener("input", refreshMappingTrees);
     panel.addEventListener("click", async event => {
-      if (event.target.closest(".map-parent-dot")) { showSourceMapMessage("Only Framework Statements can be mapped to a Practice. Source Structure nodes act as folders."); return; }
+      if (event.target.closest(".map-parent-dot")) { showSourceMapMessage("Only Framework Statements can be mapped to a control. Source Structure nodes act as folders."); return; }
       const toggle = event.target.closest("[data-map-toggle]");
       if (toggle) { const id = toggle.dataset.mapToggle; sourceMapState.collapsed.has(id) ? sourceMapState.collapsed.delete(id) : sourceMapState.collapsed.add(id); refreshMappingTrees(); return; }
       if (event.target.matches("[data-expand-all]")) { sourceMapState.collapsed.clear(); refreshMappingTrees(); return; }
@@ -2691,14 +2690,14 @@
     });
   }
   async function mapSelectedNodes() {
-    if (!sourceMapState.practiceId) { showSourceMapMessage("Select a Practice first."); return; }
+    if (!sourceMapState.controlId) { showSourceMapMessage("Select a control first."); return; }
     if (!sourceMapState.leftSelected.size) { showSourceMapMessage("Select one or more Framework Statements to map."); return; }
     const statementIds = [...sourceMapState.leftSelected]
       .map(id => id.startsWith("fs-") ? id.slice(3) : "")
       .filter(Boolean);
-    if (!statementIds.length) { showSourceMapMessage("Only Framework Statements can be mapped to a Practice."); return; }
-    if (!await appConfirm(`Map ${statementIds.length} selected Framework Statement(s) to this Practice?`, { confirmText: "Map" })) return;
-    for (const statementId of statementIds) await fetchJson(`${cmApi}/source-control-mappings`, { method:"POST", headers:{ "Content-Type":"application/json", "X-CSRF-TOKEN":csrfToken }, body:JSON.stringify({ data:{ frameworkStatementId:statementId, requirementIds:[sourceMapState.practiceId], status:"Active" } }) });
+    if (!statementIds.length) { showSourceMapMessage("Only Framework Statements can be mapped to a control."); return; }
+    if (!await appConfirm(`Map ${statementIds.length} selected Framework Statement(s) to this control?`, { confirmText: "Map" })) return;
+    for (const statementId of statementIds) await fetchJson(`${cmApi}/source-control-mappings`, { method:"POST", headers:{ "Content-Type":"application/json", "X-CSRF-TOKEN":csrfToken }, body:JSON.stringify({ data:{ frameworkStatementId:statementId, controlIds:[sourceMapState.controlId], status:"Active" } }) });
     await loadSourceMappings(); showSourceMapMessage("Mapping saved successfully.", true);
   }
   async function removeSelectedNodes() {

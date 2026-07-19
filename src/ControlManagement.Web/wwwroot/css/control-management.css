@@ -304,6 +304,27 @@ textarea {
   width: 58px;
 }
 
+/* Long-text columns on text-heavy Repository screens (e.g. Requirements,
+   Controls) should wrap inside a bounded cell so the whole table does not
+   scroll horizontally when a description is long.  The screen-key attribute
+   is set on the `.panel` wrapper by Manage.cshtml. */
+.panel[data-screen="requirements"] .table-wrap td:nth-child(2),
+.panel[data-screen="requirements"] .table-wrap td:nth-child(3),
+.panel[data-screen="controls"] .table-wrap td:nth-child(2),
+.panel[data-screen="controls"] .table-wrap td:nth-child(3) {
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  max-width: 420px;
+}
+
+.panel[data-screen="requirements"] .table-wrap th:nth-child(2),
+.panel[data-screen="requirements"] .table-wrap th:nth-child(3),
+.panel[data-screen="controls"] .table-wrap th:nth-child(2),
+.panel[data-screen="controls"] .table-wrap th:nth-child(3) {
+  max-width: 420px;
+}
+
 .empty {
   color: var(--grac-muted);
   padding: 20px 10px;
