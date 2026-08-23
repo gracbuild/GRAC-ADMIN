@@ -62,6 +62,17 @@
     color: #53627a;
     line-height: 1.35;
 }
+/* Secondary line under a card description: explains a rule the screen is
+   applying, rather than what the screen is for.  Quieter than the description
+   above it so the two do not compete.  Written as a descendant of
+   .om-card-heading so it out-specifies the `.om-card-heading p` rule above
+   without reaching for !important. */
+.om-card-heading .om-card-note {
+    margin-top: 4px;
+    color: #6b7a92;
+    font-size: 11.5px;
+}
+.om-card-heading .om-card-note strong { color: #40506b; }
 
 .om-form-grid {
     display: grid;
@@ -163,32 +174,168 @@
     border-color: #2465ca;
 }
 
+/* ---------- Multi-obligation chip picker ----------
+   Replaces the single-select dropdown so ONE cell (Practice x Release x
+   Statement) can hold multiple mapped obligations.  Chips list current
+   selections; the "+ Add Obligation" dropdown filters out already-picked
+   ones so the user can't add the same obligation twice. */
+.om-chip-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.om-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    min-height: 0;
+}
+.om-chip-list:empty { display: none; }
+.om-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    background: #eef4fc;
+    border: 1px solid #c8dcf5;
+    border-radius: 999px;
+    padding: 2px 4px 2px 10px;
+    font-size: 12px;
+    color: #0a163a;
+    line-height: 1.3;
+}
+.om-chip-label {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.om-chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    background: transparent;
+    border: 0;
+    border-radius: 999px;
+    color: #2465ca;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+}
+.om-chip-remove:hover { background: #c8dcf5; color: #b42318; }
+.om-chip-remove:focus-visible {
+    outline: 2px solid #2465ca55;
+    outline-offset: 1px;
+}
+.om-chip-empty {
+    color: #667085;
+    font-size: 12px;
+    font-style: italic;
+    padding: 2px 0;
+}
+.om-add-obligation { max-width: 100%; }
+
+/* ---------- Searchable Add Obligation combo ----------
+   Replaces the plain <select>: with a large obligation library the native list
+   meant scrolling to find one record.  The panel expands in flow rather than
+   floating, because .om-table-wrap clips overflow and a floating menu would be
+   cut off on the lower rows. */
+.om-obligation-combo {
+    position: relative;
+    max-width: 100%;
+}
+.om-combo-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 10px;
+    background: #fff;
+    border: 1px solid #d7e0ec;
+    border-radius: 7px;
+    color: #2465ca;
+    font-size: 12.5px;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer;
+}
+.om-combo-trigger:hover { border-color: #2465ca; background: #f5f9ff; }
+.om-combo-trigger:focus-visible {
+    outline: 2px solid #2465ca55;
+    outline-offset: 1px;
+}
+.om-combo-trigger i { font-size: 10px; transition: transform .15s ease; }
+.om-obligation-combo.is-open .om-combo-trigger i { transform: rotate(180deg); }
+.om-obligation-combo.is-open .om-combo-trigger { border-color: #2465ca; }
+
+.om-combo-panel {
+    margin-top: 6px;
+    border: 1px solid #c8dcf5;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 4px 14px rgba(23, 32, 51, .10);
+    overflow: hidden;
+}
+.om-combo-panel[hidden] { display: none; }
+.om-combo-search {
+    display: block;
+    width: 100%;
+    padding: 7px 10px;
+    border: 0;
+    border-bottom: 1px solid #e3e9f3;
+    background: #f7f9fc;
+    font-size: 12.5px;
+    color: #172033;
+}
+.om-combo-search:focus { outline: none; background: #fff; }
+
+/* Capped height: a long result list scrolls inside the panel instead of
+   stretching the matrix row down the page. */
+.om-combo-options {
+    display: flex;
+    flex-direction: column;
+    max-height: 230px;
+    overflow-y: auto;
+}
+.om-combo-option {
+    display: block;
+    width: 100%;
+    padding: 7px 10px;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid #f1f4f9;
+    color: #172033;
+    font-size: 12.5px;
+    line-height: 1.35;
+    text-align: left;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+.om-combo-option:last-child { border-bottom: 0; }
+.om-combo-option:hover { background: #eef4fc; }
+.om-combo-option:focus-visible {
+    outline: 2px solid #2465ca55;
+    outline-offset: -2px;
+}
+.om-combo-empty,
+.om-combo-more {
+    margin: 0;
+    padding: 8px 10px;
+    color: #667085;
+    font-size: 12px;
+    font-style: italic;
+}
+.om-combo-more { border-top: 1px solid #f1f4f9; background: #fbfcfe; }
+
 /* Bottom action bar.  position: sticky pins the bar to the bottom of the
    *content* area while letting the page scroll naturally - no fixed/modal
    overlay needed. */
-.om-action-bar {
-    position: sticky;
-    bottom: 0;
-    margin-top: 10px;
-    padding: 6px 0;
-    background: linear-gradient(to top, #ffffff 90%, #ffffff00);
-    z-index: 2;
-}
-.om-action-bar-inner {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    padding: 8px 12px;
-    background: #fff;
-    border: 1px solid #e3e9f3;
-    border-radius: 8px;
-}
-.om-action-bar-inner .button {
-    min-width: 0;
-    padding: 6px 14px;
-    height: 34px;
-    font-size: 13px;
-}
+/* .om-action-bar moved to control-management.css so every full-page form can
+   dock its Save / Cancel to the bottom right, not just this one. */
 
 /* Inline message banner */
 .form-message {
@@ -214,7 +361,6 @@
 /* Narrow viewports */
 @media (max-width: 900px) {
     .om-form-grid { grid-template-columns: minmax(0, 1fr); }
-    .om-action-bar-inner { flex-direction: column-reverse; align-items: stretch; }
     .om-table thead { display: none; }
     .om-table, .om-table tbody, .om-table tr, .om-table td { display: block; width: 100%; }
     .om-table tr {
@@ -235,7 +381,11 @@
     margin-top: 6px;
     font-size: 12px;
     color: #344054;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
 }
+.om-preview-slot { display: block; }
 .om-preview-card {
     background: #f7f9fc;
     border: 1px solid #e3e9f3;

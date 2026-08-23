@@ -1,0 +1,192 @@
+@{
+    ViewData["Title"] = "Bulk Upload";
+    var gatewayBaseUrl = ViewBag.GatewayBaseUrl as string ?? "/bulk-upload-gateway";
+}
+@Html.AntiForgeryToken()
+
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">Repository Management / Bulk Upload</p>
+        <h1>Bulk Excel Upload</h1>
+        <p>Upload Authority, Artifact, Release, Source Structure, Source Statement, Practice Obligation and mapping data in one workbook. Nothing is inserted until every row passes validation.</p>
+    </div>
+</div>
+
+<section class="panel">
+    <div class="panel-heading"><h2>Step 1 &mdash; Download template</h2></div>
+    <div style="padding:16px;">
+        <p>Download the master template. Each business table has its own sheet with headers and inline instructions.</p>
+        <a class="button primary" id="downloadTemplate" href="@gatewayBaseUrl/template">
+            <i class="fa-solid fa-download"></i> Download Template
+        </a>
+    </div>
+</section>
+
+<section class="panel" style="margin-top:16px;">
+    <div class="panel-heading"><h2>Step 2 &mdash; Upload &amp; validate</h2></div>
+    <div style="padding:16px;">
+        <p>Fill the sheets, save, then upload the file. Validation runs first and does not touch the database.</p>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+            <input type="file" id="uploadFile" accept=".xlsx" />
+            <button class="button" type="button" id="validateBtn"><i class="fa-solid fa-check-double"></i> Validate</button>
+            <button class="button primary" type="button" id="commitBtn" disabled><i class="fa-solid fa-cloud-arrow-up"></i> Commit Upload</button>
+            <button class="button" type="button" id="downloadErrorReportBtn" hidden><i class="fa-solid fa-file-excel"></i> Download Error Report</button>
+        </div>
+    </div>
+</section>
+
+<section class="panel" style="margin-top:16px;">
+    <div class="panel-heading"><h2>Step 3 &mdash; Result</h2></div>
+    <div id="resultBox" style="padding:16px;">
+        <p style="color:#555;">Upload a file and click Validate to see results here.</p>
+    </div>
+    <div id="issuesBox" style="padding:0 16px 16px 16px;" hidden>
+        <h3>Issues</h3>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Sheet</th><th>Row</th><th>Column</th><th>Message</th></tr></thead>
+                <tbody id="issuesRows"></tbody>
+            </table>
+        </div>
+    </div>
+    <div id="summaryBox" style="padding:0 16px 16px 16px;" hidden>
+        <h3>Sheet Summary</h3>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Sheet</th><th>Table</th><th>Total Rows</th><th>Valid</th><th>Invalid</th></tr></thead>
+                <tbody id="summaryRows"></tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+@section Scripts {
+<script>
+(function () {
+    var gatewayBase = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(gatewayBaseUrl));
+    var lastReport = null;
+    var lastFile = null;
+
+    function csrfToken() {
+        var el = document.querySelector('input[name="__RequestVerificationToken"]');
+        return el ? el.value : '';
+    }
+
+    function setResult(message, tone) {
+        var box = document.getElementById('resultBox');
+        var color = tone === 'success' ? '#0f5132' : tone === 'error' ? '#842029' : '#333';
+        var bg = tone === 'success' ? '#d1e7dd' : tone === 'error' ? '#f8d7da' : '#e2e3e5';
+        box.innerHTML = '<div style="padding:12px 16px;border-radius:6px;color:' + color + ';background:' + bg + ';">' + message + '</div>';
+    }
+
+    function renderSummary(sheets) {
+        var tbody = document.getElementById('summaryRows');
+        tbody.innerHTML = '';
+        if (!sheets || sheets.length === 0) { document.getElementById('summaryBox').hidden = true; return; }
+        sheets.forEach(function (s) {
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+                '<td>' + s.sheetName + '</td>' +
+                '<td>' + s.tableLabel + '</td>' +
+                '<td>' + (s.totalRows || 0) + '</td>' +
+                '<td>' + (s.validRows || 0) + '</td>' +
+                '<td>' + (s.invalidRows || 0) + '</td>';
+            tbody.appendChild(tr);
+        });
+        document.getElementById('summaryBox').hidden = false;
+    }
+
+    function renderIssues(issues) {
+        var tbody = document.getElementById('issuesRows');
+        tbody.innerHTML = '';
+        if (!issues || issues.length === 0) { document.getElementById('issuesBox').hidden = true; return; }
+        issues.slice(0, 500).forEach(function (i) {
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+                '<td>' + (i.sheet || '') + '</td>' +
+                '<td>' + (i.row || 0) + '</td>' +
+                '<td>' + (i.column || '') + '</td>' +
+                '<td>' + (i.message || '') + '</td>';
+            tbody.appendChild(tr);
+        });
+        if (issues.length > 500) {
+            var tr = document.createElement('tr');
+            tr.innerHTML = '<td colspan="4"><em>...and ' + (issues.length - 500) + ' more. Download the error report for the full list.</em></td>';
+            tbody.appendChild(tr);
+        }
+        document.getElementById('issuesBox').hidden = false;
+    }
+
+    function currentFile() {
+        var input = document.getElementById('uploadFile');
+        return input && input.files && input.files.length > 0 ? input.files[0] : null;
+    }
+
+    async function callGateway(path, file) {
+        var form = new FormData();
+        form.append('file', file, file.name);
+        var res = await fetch(gatewayBase + path, {
+            method: 'POST',
+            headers: { 'X-CSRF-TOKEN': csrfToken() },
+            body: form,
+            credentials: 'same-origin'
+        });
+        var text = await res.text();
+        try { return { ok: res.ok, body: JSON.parse(text) }; }
+        catch (e) { return { ok: false, body: { success: false, message: 'Unexpected response: ' + text.substring(0, 200) } }; }
+    }
+
+    document.getElementById('validateBtn').addEventListener('click', async function () {
+        var file = currentFile();
+        if (!file) { setResult('Please choose an .xlsx file first.', 'error'); return; }
+        setResult('Validating...', 'info');
+        lastFile = file;
+        var result = await callGateway('/validate', file);
+        lastReport = result.body;
+        renderSummary(result.body.sheets);
+        renderIssues(result.body.issues);
+        document.getElementById('commitBtn').disabled = !result.body.success;
+        document.getElementById('downloadErrorReportBtn').hidden = !(result.body.issues && result.body.issues.length > 0);
+        setResult(result.body.message || (result.body.success ? 'Validation passed.' : 'Validation failed.'),
+                  result.body.success ? 'success' : 'error');
+    });
+
+    document.getElementById('commitBtn').addEventListener('click', async function () {
+        var file = currentFile() || lastFile;
+        if (!file) { setResult('Please choose an .xlsx file first.', 'error'); return; }
+        if (!confirm('This will insert every valid row from the workbook. Continue?')) return;
+        setResult('Committing (all-or-nothing)...', 'info');
+        var result = await callGateway('/commit', file);
+        lastReport = result.body;
+        renderSummary(result.body.sheets);
+        renderIssues(result.body.issues);
+        document.getElementById('commitBtn').disabled = true;
+        document.getElementById('downloadErrorReportBtn').hidden = !(result.body.issues && result.body.issues.length > 0);
+        var msg = result.body.message || (result.body.success ? 'Commit succeeded.' : 'Commit failed.');
+        if (result.body.success && result.body.insertedCounts) {
+            var parts = Object.keys(result.body.insertedCounts).map(function (k) { return k + ': ' + result.body.insertedCounts[k]; });
+            if (parts.length) msg += ' (' + parts.join(', ') + ')';
+        }
+        setResult(msg, result.body.success ? 'success' : 'error');
+    });
+
+    document.getElementById('downloadErrorReportBtn').addEventListener('click', async function () {
+        if (!lastReport) return;
+        var res = await fetch(gatewayBase + '/error-report', {
+            method: 'POST',
+            headers: { 'X-CSRF-TOKEN': csrfToken(), 'Content-Type': 'application/json' },
+            body: JSON.stringify(lastReport),
+            credentials: 'same-origin'
+        });
+        if (!res.ok) { setResult('Unable to download error report.', 'error'); return; }
+        var blob = await res.blob();
+        var link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'bulk-upload-errors.xlsx';
+        document.body.appendChild(link);
+        link.click();
+        setTimeout(function () { URL.revokeObjectURL(link.href); link.remove(); }, 5000);
+    });
+})();
+</script>
+}

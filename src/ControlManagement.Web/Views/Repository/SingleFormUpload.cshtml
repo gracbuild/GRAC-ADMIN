@@ -1,0 +1,371 @@
+@{
+    ViewData["Title"] = "Single-Form Upload";
+    var gatewayBaseUrl = ViewBag.GatewayBaseUrl as string ?? "/single-form-upload-gateway";
+}
+@Html.AntiForgeryToken()
+
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">Repository Management / Single-Form Upload</p>
+        <h1>Single-Form Excel Upload</h1>
+        <p>Upload one form at a time. Release-scoped forms (Source Structure, Source Statement, Obligations, Mappings) require you to select a Release first. The template is signed &mdash; the Release ID cannot be silently changed.</p>
+    </div>
+</div>
+
+<section class="panel">
+    <div class="panel-heading"><h2>Step 1 &mdash; Select form &amp; release</h2></div>
+    <div style="padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:900px;">
+        <div>
+            <label for="formSelect" style="display:block;font-weight:600;margin-bottom:4px;">Form</label>
+            <select id="formSelect" style="width:100%;padding:8px;">
+                <option value="">Loading...</option>
+            </select>
+            <small id="formHelp" style="color:#666;display:block;margin-top:6px;"></small>
+        </div>
+        <div id="releaseWrap" hidden>
+            <label for="releaseSelect" style="display:block;font-weight:600;margin-bottom:4px;">Release</label>
+            <select id="releaseSelect" style="width:100%;padding:8px;">
+                <option value="">Select a release...</option>
+            </select>
+            <small style="color:#666;display:block;margin-top:6px;">Only Draft/Active releases are listed.</small>
+        </div>
+    </div>
+    <div style="padding:0 16px 16px 16px;">
+        <a class="button primary" id="downloadTemplateBtn" href="#" style="pointer-events:none;opacity:0.5;">
+            <i class="fa-solid fa-download"></i> Download Template
+        </a>
+    </div>
+</section>
+
+<section class="panel" style="margin-top:16px;">
+    <div class="panel-heading"><h2>Step 2 &mdash; Choose upload mode</h2></div>
+    <div style="padding:16px;">
+        <label style="display:block;margin-bottom:8px;">
+            <input type="radio" name="uploadMode" value="Insert" checked /> <strong>Add new only</strong>
+            &mdash; keeps existing rows, only adds new ones. Recommended.
+        </label>
+        <label id="replaceModeLabel" style="display:block;margin-bottom:8px;" hidden>
+            <input type="radio" name="uploadMode" value="Replace" /> <strong>Replace &mdash; retire existing + add new</strong>
+            &mdash; deletes all existing rows in this scope, then inserts new ones. Blocked automatically if external references exist.
+        </label>
+        <div id="replaceGuidance" style="color:#666;font-size:0.9em;" hidden>
+            Replace is destructive. Server will re-check blockers under the transaction lock; the operation is atomic.
+        </div>
+        <div id="replacePreviewPanel" style="margin-top:12px;padding:12px;border:1px solid #eee;border-radius:6px;background:#fafafa;" hidden>
+            <div id="replacePreviewSummary" style="margin-bottom:8px;"></div>
+            <div id="replacePreviewBlockers"></div>
+            <div id="replaceConfirmWrap" style="margin-top:8px;" hidden>
+                <label style="display:block;font-weight:600;margin-bottom:4px;">Type the release code to confirm delete:</label>
+                <input type="text" id="confirmReleaseCode" placeholder="Type the release code exactly..." style="width:100%;padding:8px;" />
+                <small id="confirmReleaseHint" style="color:#666;"></small>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="panel" style="margin-top:16px;">
+    <div class="panel-heading"><h2>Step 3 &mdash; Upload &amp; validate</h2></div>
+    <div style="padding:16px;">
+        <p>Fill in the downloaded template, save, then upload here. Validation runs first &mdash; no data is inserted until you press Commit.</p>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+            <input type="file" id="uploadFile" accept=".xlsx" />
+            <button class="button" type="button" id="validateBtn"><i class="fa-solid fa-check-double"></i> Validate</button>
+            <button class="button primary" type="button" id="commitBtn" disabled><i class="fa-solid fa-cloud-arrow-up"></i> Commit Upload</button>
+        </div>
+    </div>
+</section>
+
+<section class="panel" style="margin-top:16px;">
+    <div class="panel-heading"><h2>Step 4 &mdash; Result</h2></div>
+    <div id="resultBox" style="padding:16px;">
+        <p style="color:#555;">Upload a file and click Validate to see results here.</p>
+    </div>
+    <div id="summaryBox" style="padding:0 16px 16px 16px;" hidden>
+        <h3>Summary</h3>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Sheet</th><th>Table</th><th>Total Rows</th><th>Valid</th><th>Invalid</th></tr></thead>
+                <tbody id="summaryRows"></tbody>
+            </table>
+        </div>
+    </div>
+    <div id="issuesBox" style="padding:0 16px 16px 16px;" hidden>
+        <h3>Issues</h3>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Sheet</th><th>Row</th><th>Column</th><th>Message</th></tr></thead>
+                <tbody id="issuesRows"></tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+@section Scripts {
+<script>
+(function () {
+    var gatewayBase = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(gatewayBaseUrl));
+    var forms = [];
+    var releases = [];
+
+    function csrfToken() {
+        var el = document.querySelector('input[name="__RequestVerificationToken"]');
+        return el ? el.value : '';
+    }
+
+    function setResult(message, tone) {
+        var box = document.getElementById('resultBox');
+        var color = tone === 'success' ? '#0f5132' : tone === 'error' ? '#842029' : '#333';
+        var bg = tone === 'success' ? '#d1e7dd' : tone === 'error' ? '#f8d7da' : '#e2e3e5';
+        box.innerHTML = '<div style="padding:12px 16px;border-radius:6px;color:' + color + ';background:' + bg + ';">' + message + '</div>';
+    }
+
+    function currentForm() {
+        var key = document.getElementById('formSelect').value;
+        return forms.find(function (f) { return f.entityKey === key; }) || null;
+    }
+    function currentReleaseId() {
+        var v = document.getElementById('releaseSelect').value;
+        return v ? parseInt(v, 10) : null;
+    }
+    function currentFile() {
+        var input = document.getElementById('uploadFile');
+        return input && input.files && input.files.length > 0 ? input.files[0] : null;
+    }
+    function currentMode() {
+        var picked = document.querySelector('input[name="uploadMode"]:checked');
+        return picked ? picked.value : 'Insert';
+    }
+    function currentReleaseLabel() {
+        var sel = document.getElementById('releaseSelect');
+        if (!sel || !sel.value) return '';
+        var r = releases.find(function (x) { return x.releaseId === parseInt(sel.value, 10); });
+        return r ? r.label : '';
+    }
+    function currentReleaseCodeTyped() {
+        var el = document.getElementById('confirmReleaseCode');
+        return el ? el.value.trim() : '';
+    }
+
+    function updateTemplateButton() {
+        var form = currentForm();
+        var btn = document.getElementById('downloadTemplateBtn');
+        if (!form) { btn.style.pointerEvents = 'none'; btn.style.opacity = 0.5; btn.href = '#'; return; }
+        if (form.releaseScoped && !currentReleaseId()) { btn.style.pointerEvents = 'none'; btn.style.opacity = 0.5; btn.href = '#'; return; }
+        var url = gatewayBase + '/template?entity=' + encodeURIComponent(form.entityKey);
+        if (form.releaseScoped) url += '&releaseId=' + currentReleaseId();
+        btn.href = url;
+        btn.style.pointerEvents = 'auto';
+        btn.style.opacity = 1;
+    }
+
+    async function loadForms() {
+        var res = await fetch(gatewayBase + '/forms', { credentials: 'same-origin' });
+        var body = await res.json();
+        forms = (body && body.forms) || [];
+        var sel = document.getElementById('formSelect');
+        sel.innerHTML = '<option value="">-- Select a form --</option>' +
+            forms.map(function (f) { return '<option value="' + f.entityKey + '">' + f.displayName + '</option>'; }).join('');
+    }
+
+    async function loadReleases() {
+        var res = await fetch(gatewayBase + '/releases', { credentials: 'same-origin' });
+        var body = await res.json();
+        releases = (body && body.releases) || [];
+        var sel = document.getElementById('releaseSelect');
+        sel.innerHTML = '<option value="">-- Select a release --</option>' +
+            releases.map(function (r) {
+                return '<option value="' + r.releaseId + '">' + r.authorityName + ' | ' + r.label + ' (' + r.status + ')</option>';
+            }).join('');
+    }
+
+    function resetReplaceState() {
+        document.querySelector('input[name="uploadMode"][value="Insert"]').checked = true;
+        document.getElementById('replacePreviewPanel').hidden = true;
+        document.getElementById('replaceConfirmWrap').hidden = true;
+        var codeInput = document.getElementById('confirmReleaseCode');
+        if (codeInput) codeInput.value = '';
+    }
+
+    function updateModeVisibility() {
+        var form = currentForm();
+        var wrap = document.getElementById('replaceModeLabel');
+        var guidance = document.getElementById('replaceGuidance');
+        var show = !!(form && form.releaseScoped && form.replaceAllowed);
+        wrap.hidden = !show;
+        guidance.hidden = !show;
+        if (!show) resetReplaceState();
+    }
+
+    async function refreshPreviewIfReplace() {
+        var form = currentForm();
+        if (!form) return;
+        if (currentMode() !== 'Replace') {
+            document.getElementById('replacePreviewPanel').hidden = true;
+            document.getElementById('replaceConfirmWrap').hidden = true;
+            document.getElementById('commitBtn').disabled = false; // insert mode governed by validate outcome
+            return;
+        }
+        var relId = currentReleaseId();
+        if (!relId) return;
+        var res = await fetch(gatewayBase + '/preview-replace?entity=' + encodeURIComponent(form.entityKey) + '&releaseId=' + relId, { credentials: 'same-origin' });
+        var body = await res.json();
+        var preview = body && body.preview;
+        var summary = document.getElementById('replacePreviewSummary');
+        var blockers = document.getElementById('replacePreviewBlockers');
+        var confirmWrap = document.getElementById('replaceConfirmWrap');
+        document.getElementById('replacePreviewPanel').hidden = false;
+        if (!preview || preview.blocked) {
+            summary.innerHTML = '<strong style="color:#842029;">Replace blocked.</strong> ' + ((preview && preview.message) || 'Preview unavailable.');
+            var list = (preview && preview.blockers) || [];
+            blockers.innerHTML = list.length === 0 ? ''
+                : '<ul>' + list.map(function (b) { return '<li>' + b.reason + '</li>'; }).join('') + '</ul>';
+            confirmWrap.hidden = true;
+            document.getElementById('commitBtn').disabled = true;
+        } else {
+            summary.innerHTML = '<strong>Preview:</strong> Replace will delete <strong>' + (preview.existingRowsInScope || 0)
+                + '</strong> existing row(s) in <em>' + (preview.releaseLabel || '') + '</em> (' + (preview.deleteStrategy || '') + ').';
+            blockers.innerHTML = '';
+            confirmWrap.hidden = false;
+            document.getElementById('confirmReleaseHint').textContent = 'Expected: ' + (preview.releaseLabel || '');
+            document.getElementById('commitBtn').disabled = true; // stays disabled until typed code matches
+        }
+    }
+
+    document.getElementById('formSelect').addEventListener('change', function () {
+        var form = currentForm();
+        var help = document.getElementById('formHelp');
+        var wrap = document.getElementById('releaseWrap');
+        help.textContent = form ? form.instructions : '';
+        wrap.hidden = !(form && form.releaseScoped);
+        updateTemplateButton();
+        updateModeVisibility();
+        refreshPreviewIfReplace();
+    });
+    document.getElementById('releaseSelect').addEventListener('change', function () {
+        updateTemplateButton();
+        refreshPreviewIfReplace();
+    });
+    document.querySelectorAll('input[name="uploadMode"]').forEach(function (el) {
+        el.addEventListener('change', refreshPreviewIfReplace);
+    });
+    document.addEventListener('input', function (e) {
+        if (e.target && e.target.id === 'confirmReleaseCode') {
+            var expected = currentReleaseLabel();
+            var typed = currentReleaseCodeTyped();
+            document.getElementById('commitBtn').disabled = !(expected && typed === expected);
+        }
+    });
+
+    async function callMultipart(path, opts) {
+        var form = currentForm();
+        var file = currentFile();
+        if (!form) { setResult('Select a form first.', 'error'); return null; }
+        if (form.releaseScoped && !currentReleaseId()) { setResult('Select a release first.', 'error'); return null; }
+        if (!file) { setResult('Choose an .xlsx file first.', 'error'); return null; }
+
+        var data = new FormData();
+        data.append('entity', form.entityKey);
+        if (form.releaseScoped) data.append('releaseId', currentReleaseId());
+        if (opts && opts.mode) data.append('mode', opts.mode);
+        if (opts && opts.confirmReleaseCode) data.append('confirmReleaseCode', opts.confirmReleaseCode);
+        data.append('file', file, file.name);
+
+        var res = await fetch(gatewayBase + path, {
+            method: 'POST',
+            headers: { 'X-CSRF-TOKEN': csrfToken() },
+            body: data,
+            credentials: 'same-origin'
+        });
+        var text = await res.text();
+        try { return { ok: res.ok, body: JSON.parse(text) }; }
+        catch (e) { return { ok: false, body: { success: false, message: 'Unexpected response: ' + text.substring(0, 200) } }; }
+    }
+
+    function renderSummary(sheets) {
+        var tbody = document.getElementById('summaryRows');
+        tbody.innerHTML = '';
+        if (!sheets || sheets.length === 0) { document.getElementById('summaryBox').hidden = true; return; }
+        sheets.forEach(function (s) {
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+                '<td>' + (s.sheetName || '') + '</td>' +
+                '<td>' + (s.tableLabel || '') + '</td>' +
+                '<td>' + (s.totalRows || 0) + '</td>' +
+                '<td>' + (s.validRows || 0) + '</td>' +
+                '<td>' + (s.invalidRows || 0) + '</td>';
+            tbody.appendChild(tr);
+        });
+        document.getElementById('summaryBox').hidden = false;
+    }
+    function renderIssues(issues) {
+        var tbody = document.getElementById('issuesRows');
+        tbody.innerHTML = '';
+        if (!issues || issues.length === 0) { document.getElementById('issuesBox').hidden = true; return; }
+        issues.slice(0, 500).forEach(function (i) {
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+                '<td>' + (i.sheet || '') + '</td>' +
+                '<td>' + (i.row || 0) + '</td>' +
+                '<td>' + (i.column || '') + '</td>' +
+                '<td>' + (i.message || '') + '</td>';
+            tbody.appendChild(tr);
+        });
+        if (issues.length > 500) {
+            var tr = document.createElement('tr');
+            tr.innerHTML = '<td colspan="4"><em>...and ' + (issues.length - 500) + ' more.</em></td>';
+            tbody.appendChild(tr);
+        }
+        document.getElementById('issuesBox').hidden = false;
+    }
+
+    document.getElementById('validateBtn').addEventListener('click', async function () {
+        setResult('Validating...', 'info');
+        var result = await callMultipart('/validate');
+        if (!result) return;
+        renderSummary(result.body.sheets);
+        renderIssues(result.body.issues);
+        // In Insert mode, validation success alone enables commit.
+        // In Replace mode, the typed release code gate still applies.
+        var validationPassed = !!result.body.success;
+        if (currentMode() === 'Replace') {
+            var typed = currentReleaseCodeTyped();
+            var expected = currentReleaseLabel();
+            document.getElementById('commitBtn').disabled = !(validationPassed && expected && typed === expected);
+        } else {
+            document.getElementById('commitBtn').disabled = !validationPassed;
+        }
+        setResult(result.body.message || (validationPassed ? 'Validation passed.' : 'Validation failed.'),
+                  validationPassed ? 'success' : 'error');
+    });
+    document.getElementById('commitBtn').addEventListener('click', async function () {
+        var mode = currentMode();
+        var opts = { mode: mode };
+        if (mode === 'Replace') {
+            opts.confirmReleaseCode = currentReleaseCodeTyped();
+            var expected = currentReleaseLabel();
+            if (opts.confirmReleaseCode !== expected) { setResult('Type the release code exactly to confirm.', 'error'); return; }
+            if (!confirm('REPLACE MODE: This will DELETE existing rows in ' + expected + ' and insert new ones. All-or-nothing. Continue?')) return;
+        } else {
+            if (!confirm('This will insert every valid row into the selected form. Continue?')) return;
+        }
+        setResult('Committing (all-or-nothing)...', 'info');
+        var result = await callMultipart('/commit', opts);
+        if (!result) return;
+        renderSummary(result.body.sheets);
+        renderIssues(result.body.issues);
+        document.getElementById('commitBtn').disabled = true;
+        var msg = result.body.message || (result.body.success ? 'Commit succeeded.' : 'Commit failed.');
+        if (result.body.success && result.body.insertedCounts) {
+            var parts = Object.keys(result.body.insertedCounts).map(function (k) { return k + ': ' + result.body.insertedCounts[k]; });
+            if (parts.length) msg += ' (' + parts.join(', ') + ')';
+        }
+        setResult(msg, result.body.success ? 'success' : 'error');
+    });
+
+    (async function () {
+        await Promise.all([loadForms(), loadReleases()]);
+        setResult('Select a form to begin.', 'info');
+    })();
+})();
+</script>
+}

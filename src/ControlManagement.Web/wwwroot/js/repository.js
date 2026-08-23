@@ -8,6 +8,8 @@
   const saveButton = document.querySelector("#saveRecord");
   const closeButton = document.querySelector("#closeRecord");
   const cancelButton = document.querySelector("#cancelRecord");
+  const editButton = document.querySelector("#editRecord");
+  const modeChip = document.querySelector("#dialogModeChip");
   const message = document.querySelector("#formMessage");
   const pageTitle = document.querySelector("#pageTitle");
   const authoritySelect = document.querySelector("#authority");
@@ -17,24 +19,19 @@
   const changeActionTypeSelect = document.querySelector("#changeActionType");
   const addRecordButton = document.querySelector("#addRecord");
   const backButton = document.querySelector("#backToParent");
-  const auditPager = document.querySelector("#auditPager");
-  const auditPagerInfo = document.querySelector("#auditPagerInfo");
-  const auditPageInfo = document.querySelector("#auditPageInfo");
-  const auditPageSize = document.querySelector("#auditPageSize");
-  const auditPrev = document.querySelector("#auditPrev");
-  const auditNext = document.querySelector("#auditNext");
-  const gridPager = document.querySelector("#gridPager");
-  const gridPagerInfo = document.querySelector("#gridPagerInfo");
-  const gridPageInfo = document.querySelector("#gridPageInfo");
-  const gridPageSize = document.querySelector("#gridPageSize");
-  const gridFirst = document.querySelector("#gridFirst");
-  const gridPrev = document.querySelector("#gridPrev");
-  const gridNext = document.querySelector("#gridNext");
-  const gridLast = document.querySelector("#gridLast");
+  const gridPagerHost = document.querySelector("#gridPager");
   const query = new URLSearchParams(window.location.search);
-  const pathBase = (window.cmPathBase || "").replace(/\/$/, "");
+  // Screens whose stored procedures already accept page/pageSize and return a
+  // TotalCount row.  Everything else is paged client-side over the records the
+  // API returned — same control, same look, same behaviour.
   const paginatedAreas = new Set(["user-management","role-management","menu-management","role-permissions"]);
-  const state = { id: 0, mode: "add", lookups: {}, records: [], auditPage: 1, auditPageSize: Number(auditPageSize?.value || 25), gridPage: 1, gridPageSize: Number(gridPageSize?.value || 25), gridTotal: 0, changeModules: [], loadVersion: 0, collapsed: new Set(), formContext: {}, navigationCode: query.get("code") || "", navigationContext: null, similarControls: [], similarFilters: {}, similarSort: { key: "MatchCount", direction: "desc" }, frameworkStatementNodes: [], frameworkStatementReleases: [] };
+  // source-structure is paged by top-level node via pageTreeRoots() so a tree
+  // is never split across two pages; its descendants always travel with their
+  // root.  framework-statements is hierarchical too, but its records are the
+  // statements rather than the nodes, so it pages by statement and carries the
+  // hosting nodes along as headers -- see renderFrameworkStatementRows().
+  const GRID_PAGE_SIZE = 10;
+  const state = { id: 0, mode: "add", lookups: {}, records: [], gridPage: 1, gridPageSize: GRID_PAGE_SIZE, gridTotal: 0, changeModules: [], loadVersion: 0, collapsed: new Set(), formContext: {}, navigationCode: query.get("code") || "", navigationContext: null, similarControls: [], similarFilters: {}, similarSort: { key: "MatchCount", direction: "desc" }, frameworkStatementNodes: [], frameworkStatementReleases: [] };
   // "Practices - Statement Mapping" screen state.  The subject of the mapping is
   // a Practice (requirements table) — the property is named practiceId here to
   // match the on-screen label.  Mapping is persisted via
@@ -43,8 +40,65 @@
   const controlSourceMapState = { nodes: [], releases: [], artifacts: [], selected: new Set(), existing: new Map(), collapsed: new Set(), readonly: false };
   const frameworkStatementTreeState = { nodes: [], selected: "", collapsed: new Set(), readonly: false };
   const obligationState = { requirement: null, contexts: [] };
+  // Obligation ids that have already had the "start collapsed" default applied,
+  // so a user's expand survives the next render (see renderObligationRows).
+  const obligationCollapseSeeded = new Set();
   const requirementMapState = { nodes: [], statements: [], collapsed: new Set(), readonly: false };
   const approvalAreas = new Set(["changes", "impact-analysis", "change-management"]);
+  // Read-only screens: their records are never edited from the dialog, so the
+  // View dialog must not offer an Edit button.
+  const nonEditableAreas = new Set(["change-management", "audit-trace", "assurance-version-history"]);
+  // ---------------------------------------------------------------- paging --
+  // One pager instance drives every screen.  Server-paged screens reload from
+  // the API on change; client-paged screens simply re-render the current rows.
+  const gridPager = window.GracPager?.mount(gridPagerHost, {
+    pageSize: GRID_PAGE_SIZE,
+    onChange: ({ page, pageSize }) => {
+      state.gridPage = page;
+      state.gridPageSize = pageSize;
+      if (paginatedAreas.has(cmScreen.Key)) { load(); return; }
+      rows.innerHTML = renderRows();
+      updateGridPager();
+    }
+  });
+  function isServerPaged() { return paginatedAreas.has(cmScreen.Key); }
+  function gridPageStart() { return (Math.max(1, state.gridPage) - 1) * Math.max(1, state.gridPageSize); }
+  /* Rows for the current page of a flat (non-hierarchical) list. Server-paged
+     screens already receive exactly one page, so they pass straight through. */
+  function pageRows(items) {
+    const list = items || [];
+    if (isServerPaged()) { return list; }
+    state.gridTotal = list.length;
+    const size = Math.max(1, state.gridPageSize);
+    const lastPage = Math.max(1, Math.ceil(list.length / size));
+    if (state.gridPage > lastPage) state.gridPage = lastPage;
+    return list.slice(gridPageStart(), gridPageStart() + size);
+  }
+  /* Page a hierarchy by its root nodes: slice the roots, then carry every
+     descendant of the surviving roots along so no tree is ever cut in half. */
+  function pageTreeRoots(records) {
+    const list = records || [];
+    if (!list.length) { state.gridTotal = 0; return list; }
+    const ids = new Set(list.map(row => String(row.Id)));
+    const roots = list.filter(row => {
+      const parent = String(row.ParentNodeId || "");
+      return !parent || !ids.has(parent);
+    });
+    state.gridTotal = roots.length;
+    const size = Math.max(1, state.gridPageSize);
+    const lastPage = Math.max(1, Math.ceil(roots.length / size));
+    if (state.gridPage > lastPage) state.gridPage = lastPage;
+    const keep = new Set(roots.slice(gridPageStart(), gridPageStart() + size).map(row => String(row.Id)));
+    let grew = true;
+    while (grew) {
+      grew = false;
+      list.forEach(row => {
+        const id = String(row.Id), parent = String(row.ParentNodeId || "");
+        if (parent && keep.has(parent) && !keep.has(id)) { keep.add(id); grew = true; }
+      });
+    }
+    return list.filter(row => keep.has(String(row.Id)));
+  }
   let actionPopover = null, actionTrigger = null;
   const permissions = new Set(window.cmPermissions || []);
   const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
@@ -60,29 +114,55 @@
   const check = (name, label) => ({ name, label, type: "checkbox" });
   const tags = (name, label, required = false, extra = {}) => ({ name, label, type: "tags", required, full: true, ...extra });
   const schemas = {
-    "authorities": [text("code","Code",true),text("name","Name",true),area("description","Description"),select("jurisdiction","Jurisdiction","jurisdictions"),text("website","Website",false,{ inputType:"url" }),select("status","Status","status-active",true)],
-    "artifacts": [select("authorityId","Authority","authorities",true),text("code","Code",true),text("name","Name",true),area("description","Description"),select("category","Category","artifact-categories",true),select("industries","Industries","industries",false,{ multiple:true, compact:true }),select("jurisdictions","Jurisdictions","jurisdictions",false,{ multiple:true, compact:true }),select("status","Status","status-active",true)],
+    "authorities": [text("code","Code",true),text("name","Name",true),area("description","Description"),select("jurisdiction","Jurisdiction","jurisdictions"),text("website","Website",false,{ inputType:"url" }),select("status","Status","status-repository",true)],
+    "artifacts": [select("authorityId","Authority","authorities",true),text("code","Code",true),text("name","Name",true),area("description","Description"),select("category","Category","artifact-categories",true),select("industries","Industries","industries",false,{ multiple:true, compact:true }),select("jurisdictions","Jurisdictions","jurisdictions",false,{ multiple:true, compact:true }),select("status","Status","status-repository",true)],
     "releases": [select("artifactId","Artifact","artifacts",true),text("version","Version",true),date("effectiveDate","Effective Date"),date("endDate","End Date"),area("releaseNotes","Release Notes"),select("status","Status","release-status",true)],
     "statement-classifications": [select("releaseId","Release","releases",true),text("scheme","Classification Scheme"),text("name","Classification Name",true),area("description","Description")],
-    "source-structure": [select("nodeType","Node Type","node-types",true),text("reference","Node Reference",true),text("title","Node Title",true),area("description","Description"),select("status","Status","status-active",true)],
-    "framework-statements": [select("releaseId","Release","releases",true),{ name:"structureNodeId", label:"Source Structure", type:"source-tree", required:true, full:true },select("classificationId","Statement Classification","statement-classifications"),text("statementReference","Statement Reference",true),text("statementTitle","Statement Title"),area("statementText","Statement Text",true),text("statementType","Statement Type"),text("remarks","Remarks"),select("status","Status","status-active",true)],
-    "controls": [text("code","Code",true),text("name","Name",true),area("description","Description"),area("objective","Objective"),select("domainId","Domain","control-domains",false,{ addButton:"Add New Domain" }),select("subDomainId","Sub Domain","control-sub-domains",false,{ addButton:"Add New Sub Domain" }),tags("keywords","Keywords",false,{ placeholder:"MFA, privileged access, password, authentication" }),select("status","Status","status-active",true)],
-    "requirements": [text("code","Requirement Code",true),text("name","Requirement Name",true),area("statement","Description",true),area("objective","Objective"),tags("keywords","Keywords",false,{ placeholder:"access review, KYC, vendor due diligence, evidence review" }),select("status","Status","status-active",true)],
-    "obligations": [text("obligationName","Obligation Name",true),select("executionFrequencyId","Execution Frequency","frequency-master",true),text("retentionRequirement","Retention Period"),area("remarks","Remarks"),tags("keywords","Keywords",false,{ placeholder:"access review, KYC, vendor due diligence, evidence review" }),{ name:"evidenceRequirements", label:"Evidence Details", type:"evidence-grid", full:true },select("status","Status","status-active",true)],
-    "obligation-mappings": [select("obligationId","Obligation","obligations",true,{ full:true }),select("requirementId","Requirement","requirements",true),select("releaseId","Release","releases",true),select("status","Status","status-active",true)],
+    // Release is picked on the form itself so Add Source Node no longer
+    // depends on the grid's Release filter.  It is locked (read-only) for
+    // Add Child Node and for Edit / View -- see openForm().
+    "source-structure": [select("releaseId","Release","releases",true),select("nodeType","Node Type","node-types",true),text("reference","Node Reference",true),text("title","Node Title",true),area("description","Description"),select("status","Status","status-repository",true)],
+    "framework-statements": [select("releaseId","Release","releases",true),{ name:"structureNodeId", label:"Source Structure", type:"source-tree", required:true, full:true },select("classificationId","Statement Classification","statement-classifications"),text("statementReference","Statement Reference",true),text("statementTitle","Statement Title"),area("statementText","Statement Text",true),text("remarks","Remarks"),select("status","Status","status-repository",true)],
+    "controls": [text("code","Code",true),text("name","Name",true),area("description","Description"),area("objective","Objective"),select("domainId","Domain","control-domains",false,{ addButton:"Add New Domain" }),select("subDomainId","Sub Domain","control-sub-domains",false,{ addButton:"Add New Sub Domain" }),tags("keywords","Keywords",false,{ placeholder:"MFA, privileged access, password, authentication" }),select("status","Status","status-repository",true)],
+    // Practice Code is generated by the save procedure (PR-001, PR-002, ...).
+    // formSchema() drops it on Add; on Edit / View it is shown read-only.
+    "requirements": [text("code","Practice Code",false,{ readonly:true }),text("name","Practice Name",true),area("statement","Description",true),area("objective","Objective"),tags("keywords","Keywords",false,{ placeholder:"access review, KYC, vendor due diligence, evidence review" }),select("status","Status","status-repository",true)],
+    "obligations": [text("obligationName","Obligation Name",true),select("executionFrequencyId","Execution Frequency","frequency-master",true),text("retentionRequirement","Retention Period"),area("remarks","Remarks"),tags("keywords","Keywords",false,{ placeholder:"access review, KYC, vendor due diligence, evidence review" }),{ name:"evidenceRequirements", label:"Evidence Details", type:"evidence-grid", full:true },select("status","Status","status-repository",true)],
+    "obligation-mappings": [select("obligationId","Obligation","obligations",true,{ full:true }),select("requirementId","Requirement","requirements",true),select("releaseId","Release","releases",true),select("status","Status","status-repository",true)],
     "control-requirement-mappings": [select("controlId","Control","controls",true,{ full:true }),select("requirementIds","Requirements","requirements",false,{ multiple:true, compact:true, full:true, search:true, listbox:true })],
-    "source-control-mappings": [select("frameworkStatementId","Framework Statement","framework-statements",true),select("requirementIds","Practices","requirements",true,{ multiple:true, full:true }),select("status","Status","status-active",true)],
-    "user-management": [text("userName","User Name",true),text("loginId","Login ID",true),text("email","Email",true,{ inputType:"email" }),select("roleIds","Roles","cm-roles",false,{ multiple:true, compact:true, full:true, search:true, listbox:true }),area("remarks","Remarks"),select("status","Status","status-active",true)],
-    "role-management": [text("roleName","Role Name",true),area("description","Description"),select("status","Status","status-active",true)],
-    "menu-management": [select("parentMenuId","Parent Menu","cm-menus"),text("menuName","Menu Name",true),text("menuCode","Menu Code",true),text("routeUrl","Route / URL"),number("displayOrder","Display Order",true,{ min:"0" }),text("icon","Icon"),select("status","Status","status-active",true)],
-    "role-permissions": [select("roleId","Role","cm-roles",true),select("menuId","Menu","cm-menus",true),select("canView","View","yes-no",true),select("canAdd","Add","yes-no",true),select("canEdit","Edit","yes-no",true),select("canInactive","Inactive/Delete","yes-no",true),select("canApprove","Approve","yes-no",true),select("status","Status","status-active",true)],
-    "applicability-rules": [select("artifactId","Artifact","artifacts"),select("releaseId","Release","releases"),text("name","Rule Name",true),area("expression","Rule Expression",true,{ placeholder:"Example: industry = Banking AND geography = India" }),number("priority","Priority",true,{ min:"1" }),select("outcome","Outcome","applicability-outcomes",true),select("status","Status","status-active",true)],
+    "source-control-mappings": [select("frameworkStatementId","Framework Statement","framework-statements",true),select("requirementIds","Practices","requirements",true,{ multiple:true, full:true }),select("status","Status","status-repository",true)],
+    "user-management": [text("userName","User Name",true),text("loginId","Login ID",true),text("email","Email",true,{ inputType:"email" }),select("roleIds","Roles","cm-roles",false,{ multiple:true, compact:true, full:true, search:true, listbox:true }),area("remarks","Remarks"),select("status","Status","status-admin",true)],
+    "role-management": [text("roleName","Role Name",true),area("description","Description"),select("status","Status","status-admin",true)],
+    "menu-management": [select("parentMenuId","Parent Menu","cm-menus"),text("menuName","Menu Name",true),text("menuCode","Menu Code",true),text("routeUrl","Route / URL"),number("displayOrder","Display Order",true,{ min:"0" }),text("icon","Icon"),select("status","Status","status-admin",true)],
+    "role-permissions": [select("roleId","Role","cm-roles",true),select("menuId","Menu","cm-menus",true),select("canView","View","yes-no",true),select("canAdd","Add","yes-no",true),select("canEdit","Edit","yes-no",true),select("canInactive","Inactive/Delete","yes-no",true),select("canApprove","Approve","yes-no",true),select("status","Status","status-admin",true)],
+    "applicability-rules": [select("artifactId","Artifact","artifacts"),select("releaseId","Release","releases"),text("name","Rule Name",true),area("expression","Rule Expression",true,{ placeholder:"Example: industry = Banking AND geography = India" }),number("priority","Priority",true,{ min:"1" }),select("outcome","Outcome","applicability-outcomes",true),select("status","Status","status-repository",true)],
     "changes": [select("entityType","Entity Type","entity-types",true),number("entityId","Entity ID",true,{ min:"1" }),select("changeType","Change Type","change-types",true),area("summary","Change Summary",true),date("effectiveDate","Effective Date"),select("severity","Severity","severity",true),select("status","Status","change-status",true)],
     "impact-analysis": [select("changeEventId","Change Event","changes",true),select("impactedEntityType","Impacted Entity Type","entity-types",true),number("impactedEntityId","Impacted Entity ID",true,{ min:"1" }),select("organizationId","Organization","organizations"),area("summary","Impact Summary"),area("recommendedAction","Recommended Action"),select("status","Status","change-status",true)],
     "notifications": [select("impactAnalysisId","Impact Analysis","impact-analysis"),select("organizationId","Organization","organizations"),select("type","Notification Type","notification-types",true),text("subject","Subject",true),area("message","Message",true),select("severity","Severity","severity",true),area("recommendedAction","Recommended Action"),select("status","Status","notification-status",true)],
     "change-management": [text("ChangeRequestNumber","Change Request Number"),text("Module","Module"),text("RecordReference","Record Reference"),text("ActionType","Action Type"),text("Maker","Maker"),text("SubmittedOn","Submitted On"),text("Checker","Checker"),text("CheckedOn","Checked On"),select("Status","Status","change-approval-status"),area("FieldChangesJson","Field-level Changes"),area("OldDataJson","Old Data"),area("ProposedDataJson","Proposed Data"),area("CheckerComments","Checker Comments")],
-    "approval-workflow": [select("moduleName","Module","modules",true),area("makerRoles","Maker Roles"),area("makerUsers","Maker Users"),area("checkerRoles","Checker Roles"),area("checkerUsers","Checker Users"),select("approvalRequired","Approval Required","yes-no",true),select("selfApprovalAllowed","Self Approval Allowed","yes-no",true),number("minimumApprovers","Minimum Approvers",true,{ min:"1" }),select("status","Status","status-active",true)],
-    "audit-trace": [text("entityType","Entity Type"),text("entityId","Entity ID"),text("actionType","Action Type"),text("status","Status"),text("enteredBy","Entered By"),text("enteredDt","Entered Date")]
+    "approval-workflow": [select("moduleName","Module","modules",true),area("makerRoles","Maker Roles"),area("makerUsers","Maker Users"),area("checkerRoles","Checker Roles"),area("checkerUsers","Checker Users"),select("approvalRequired","Approval Required","yes-no",true),select("selfApprovalAllowed","Self Approval Allowed","yes-no",true),number("minimumApprovers","Minimum Approvers",true,{ min:"1" }),select("status","Status","status-admin",true)],
+    "audit-trace": [text("entityType","Entity Type"),text("entityId","Entity ID"),text("actionType","Action Type"),text("status","Status"),text("enteredBy","Entered By"),text("enteredDt","Entered Date")],
+    // -----------------------------------------------------------
+    // Assurance Management (Phase 1 - Admin / Authority Control Module)
+    // Every metadata master is defined by Code + Name and a status.
+    // Lifecycle fields (version, lifecycleStatus) are managed by the
+    // API/SP; the form only exposes the editable business attributes.
+    // -----------------------------------------------------------
+    "assurance-categories": [text("code","Category Code",true),text("name","Category Name",true),area("description","Description"),number("displayOrder","Display Order",false,{ min:"0" }),select("status","Status","status-repository",true)],
+    "assurance-scoring-models": [text("code","Model Code",true),text("name","Model Name",true),area("description","Description"),text("formulaType","Formula Type",false,{ placeholder:"Percentage / PassFail / WeightedAvg / RiskMatrix / Maturity / Compliance" }),area("formulaDefinition","Formula Definition",false,{ placeholder:"Configuration JSON only. Free-text SQL is rejected by the API." }),text("ratingScale","Rating Scale",false,{ placeholder:"e.g. 0-100 or Low;Medium;High;Critical" }),number("passThreshold","Pass Threshold",false,{ step:"0.01", min:"0" }),select("status","Status","status-repository",true)],
+    "assurance-severity": [text("code","Severity Code",true),text("name","Severity Name",true),area("description","Description"),number("severityRank","Severity Rank",false,{ min:"1" }),text("colorCode","Color Code",false,{ placeholder:"#c92a2a" }),select("status","Status","status-repository",true)],
+    "assurance-gap-categories": [text("code","Gap Code",true),text("name","Gap Name",true),area("description","Description"),number("displayOrder","Display Order",false,{ min:"0" }),select("status","Status","status-repository",true)],
+    "assurance-workflow-templates": [text("code","Template Code",true),text("name","Template Name",true),area("description","Description"),number("slaHours","SLA (hours)",false,{ min:"0" }),area("escalationRule","Escalation Rule"),select("status","Status","status-repository",true)],
+    "assurance-question-types": [text("code","Question Code",true),text("name","Question Name",true),area("description","Description"),text("answerShape","Answer Shape",false,{ placeholder:"Boolean / Choice / Text / Number / Date / Rating / Observation / Evidence / Checklist" }),select("requiresEvidence","Requires Evidence","yes-no"),number("displayOrder","Display Order",false,{ min:"0" }),select("status","Status","status-repository",true)],
+    "assurance-sampling-models": [text("code","Sampling Code",true),text("name","Sampling Name",true),area("description","Description"),area("methodology","Methodology"),select("status","Status","status-repository",true)],
+    "assurance-frequency-types": [text("code","Frequency Code",true),text("name","Frequency Name",true),area("description","Description"),number("intervalDays","Interval (days)",false,{ min:"0" }),number("displayOrder","Display Order",false,{ min:"0" }),select("status","Status","status-repository",true)],
+    "assurance-report-templates": [text("code","Template Code",true),text("name","Template Name",true),area("description","Description"),text("reportScope","Report Scope",false,{ placeholder:"Executive / Engagement / Register / Dashboard" }),area("layoutDefinition","Layout Definition"),select("status","Status","status-repository",true)],
+    "assurance-starter-templates": [text("code","Template Code",true),text("name","Template Name",true),area("description","Description"),select("categoryId","Assurance Category","assurance-categories"),select("scoringModelId","Scoring Model","assurance-scoring-models"),select("workflowTemplateId","Workflow Template","assurance-workflow-templates"),select("samplingModelId","Sampling Model","assurance-sampling-models"),select("frequencyTypeId","Frequency Type","assurance-frequency-types"),select("reportTemplateId","Report Template","assurance-report-templates"),select("status","Status","status-repository",true)],
+    "assurance-version-history": [text("entityType","Entity Type"),text("entityId","Entity ID"),text("version","Version"),text("lifecycleStatus","Lifecycle Status"),text("actionCode","Action"),text("enteredBy","Changed By"),text("enteredDt","Changed On"),area("remarks","Remarks")],
+    // SLA Master (043).  Not rendered by the generic modal -- openForm() redirects
+    // to /Repository/SlaMaster.  Kept here as a fallback in case the redirect
+    // path ever misses a mode, so the modal shows fields instead of a blank pane.
+    "sla-master": [text("processCode","Process",true),select("classification","Classification","sla-classification",true),number("durationValue","Duration Value",true,{ min:"1" }),select("durationUnit","Duration Unit","sla-duration-units",true),select("timeBasis","Time Basis","sla-time-bases",true),number("warningPct","Warning %",true,{ min:"1", max:"99" }),number("escalationPct","Escalation %",true,{ min:"2", max:"100" }),date("effectiveFrom","Effective From"),area("remarks","Remarks"),select("status","Status","status-repository",true)]
   };
   const entityLabels = {
     "authorities": { singular: "Authority", add: "Add Authority", edit: "Edit Authority", view: "View Authority", saved: "Authority saved successfully." },
@@ -90,9 +170,15 @@
     "releases": { singular: "Release", add: "Add Release", edit: "Edit Release", view: "View Release", saved: "Release saved successfully." },
     "statement-classifications": { singular: "Source Classification", add: "Add Source Classification", edit: "Edit Source Classification", view: "View Source Classification", saved: "Source classification saved successfully." },
     "source-structure": { singular: "Source Node", add: "Add Source Node", addChild: "Add Child Node", edit: "Edit Source Node", view: "View Source Node", saved: "Source node saved successfully." },
-    "framework-statements": { singular: "Framework Statement", add: "Add Framework Statement", edit: "Edit Framework Statement", view: "View Framework Statement", saved: "Framework statement saved successfully." },
+    // The screen is titled "Source Statements" (RepositoryScreen.cs), so the
+    // buttons and dialog titles on it say Source Statement too.  The entity key
+    // stays framework-statements.
+    "framework-statements": { singular: "Source Statement", add: "Add Source Statement", edit: "Edit Source Statement", view: "View Source Statement", saved: "Source statement saved successfully." },
     "controls": { singular: "Control", add: "Add Control", edit: "Edit Control", view: "View Control", saved: "Control saved successfully." },
-    "requirements": { singular: "Requirement", add: "Add Requirement", edit: "Edit Requirement", view: "View Requirement", saved: "Requirement saved successfully." },
+    // The screen is titled "Practices" (RepositoryScreen.cs) and this is the
+    // Practice module, so every button, dialog title and message says Practice.
+    // The entity key stays requirements.
+    "requirements": { singular: "Practice", add: "Add Practice", edit: "Edit Practice", view: "View Practice", saved: "Practice saved successfully." },
     "obligations": { singular: "Obligation", add: "Add Obligation", edit: "Edit Obligation", view: "View Obligation", saved: "Obligation saved successfully." },
     "obligation-evidence": { singular: "Evidence", add: "Add Evidence", edit: "Edit Evidence", view: "View Evidence", saved: "Evidence saved successfully." },
     "control-requirement-mappings": { singular: "Mapping", add: "Add Mapping", edit: "Update Mapping", view: "View Mapping", saved: "Mapping saved successfully." },
@@ -106,14 +192,37 @@
     "impact-analysis": { singular: "Impact Analysis", add: "Add Impact Analysis", edit: "Edit Impact Analysis", view: "View Impact Analysis", saved: "Impact analysis saved successfully." },
     "notifications": { singular: "Notification", add: "Add Notification", edit: "Edit Notification", view: "View Notification", saved: "Notification saved successfully." },
     "change-management": { singular: "Change Request", add: "Add Change Request", edit: "Edit Change Request", view: "View Change Request", saved: "Change request saved successfully." },
-    "approval-workflow": { singular: "Approval Workflow", add: "Add Approval Workflow", edit: "Edit Approval Workflow", view: "View Approval Workflow", saved: "Approval workflow saved successfully." }
+    "approval-workflow": { singular: "Approval Workflow", add: "Add Approval Workflow", edit: "Edit Approval Workflow", view: "View Approval Workflow", saved: "Approval workflow saved successfully." },
+    // Assurance Management (Phase 1) labels
+    "assurance-categories": { singular: "Assurance Category", add: "Add Assurance Category", edit: "Edit Assurance Category", view: "View Assurance Category", saved: "Assurance category saved successfully." },
+    "assurance-scoring-models": { singular: "Scoring Model", add: "Add Scoring Model", edit: "Edit Scoring Model", view: "View Scoring Model", saved: "Scoring model saved successfully." },
+    "assurance-severity": { singular: "Observation Severity", add: "Add Observation Severity", edit: "Edit Observation Severity", view: "View Observation Severity", saved: "Observation severity saved successfully." },
+    "assurance-gap-categories": { singular: "Gap Category", add: "Add Gap Category", edit: "Edit Gap Category", view: "View Gap Category", saved: "Gap category saved successfully." },
+    "assurance-workflow-templates": { singular: "Workflow Template", add: "Add Workflow Template", edit: "Edit Workflow Template", view: "View Workflow Template", saved: "Workflow template saved successfully." },
+    "assurance-question-types": { singular: "Question Type", add: "Add Question Type", edit: "Edit Question Type", view: "View Question Type", saved: "Question type saved successfully." },
+    "assurance-sampling-models": { singular: "Sampling Model", add: "Add Sampling Model", edit: "Edit Sampling Model", view: "View Sampling Model", saved: "Sampling model saved successfully." },
+    "assurance-frequency-types": { singular: "Frequency Type", add: "Add Frequency Type", edit: "Edit Frequency Type", view: "View Frequency Type", saved: "Frequency type saved successfully." },
+    "assurance-report-templates": { singular: "Report Template", add: "Add Report Template", edit: "Edit Report Template", view: "View Report Template", saved: "Report template saved successfully." },
+    "assurance-starter-templates": { singular: "Starter Assurance Template", add: "Add Starter Template", edit: "Edit Starter Template", view: "View Starter Template", saved: "Starter template saved successfully." },
+    "assurance-version-history": { singular: "Version History Entry", add: "Add Entry", edit: "Edit Entry", view: "View Entry", saved: "Version history entry saved successfully." },
+    "sla-master": { singular: "SLA", add: "Add SLA", edit: "Edit SLA", view: "View SLA", saved: "SLA saved successfully." }
   };
   const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" })[char]);
-  const appUrl = path => `${pathBase}${path}`;
+  // Resolved against the application root (see gracUrl in site.js).
+  const appUrl = path => window.gracUrl.app(path);
   const appAlert = (message, type = "info", title = "") => window.gracAlert ? window.gracAlert({ message, type, title }) : Promise.resolve(window.alert(message));
   const appConfirm = (message, options = {}) => window.gracConfirm ? window.gracConfirm({ message, type: options.type || "warning", title: options.title || "Please confirm", confirmText: options.confirmText || "Continue", cancelText: options.cancelText || "Cancel" }) : Promise.resolve(window.confirm(message));
   const appPrompt = (message, options = {}) => window.gracPrompt ? window.gracPrompt({ message, type: options.type || "info", title: options.title || "Comments", defaultValue: options.defaultValue || "", confirmText: options.confirmText || "Continue", cancelText: options.cancelText || "Cancel" }) : Promise.resolve(window.prompt(message, options.defaultValue || ""));
-  const badge = value => `<span class="badge">${escapeHtml(value)}</span>`;
+  /* Status badges carry their state in the colour so an inactive row is
+     recognisable at a glance — which matters now that the 3-dots menu offers
+     Activate or Inactive depending on it.  Unknown values keep the default. */
+  const badgeTone = value => {
+    const text = String(value || "").trim().toLowerCase();
+    if (["inactive", "retired", "archived", "rejected", "cancelled", "canceled"].includes(text)) return " badge-muted";
+    if (["pending approval", "draft", "review", "in review", "sent back"].includes(text)) return " badge-pending";
+    return "";
+  };
+  const badge = value => `<span class="badge${badgeTone(value)}">${escapeHtml(value)}</span>`;
   const apiData = result => result.data?.[0] || result.Data?.[0] || [];
   const valueOf = (row, name) => row[name] ?? row[name[0].toUpperCase() + name.slice(1)] ?? "";
   const formatIstDateTime = value => {
@@ -179,7 +288,7 @@
   };
   const cellValue = (row, column) => {
     const value = cmScreen.Key === "audit-trace" && (column === "FromValue" || column === "ToValue") ? auditValue(row, column) : row[column];
-    if (column === "Status" || column === "Severity") return badge(value);
+    if (column === "Status" || column === "Severity" || column === "LifecycleStatus") return badge(value);
     if (cmScreen.Key === "releases" && (column === "EffectiveDate" || column === "EndDate")) return escapeHtml(formatDateOnly(value));
     if (column === "ChangedOn" || column === "SubmittedOn" || column === "CheckedOn" || column === "EnteredDt" || column.endsWith("Date") || column.endsWith("Dt")) return escapeHtml(formatIstDateTime(value));
     return escapeHtml(value);
@@ -220,8 +329,8 @@
     return labels.view;
   };
   const addDefaultStatusEntities = new Set(["authorities","artifacts","releases","statement-classifications","source-structure","framework-statements","controls","control-domains","control-sub-domains","requirements","source-control-mappings","applicability-rules","user-management","role-management","menu-management","role-permissions","approval-workflow"]);
-  const changeActionTypes = ["Add", "Edit", "Inactive", "Approve", "Reject", "Send Back"];
-  const auditActionTypes = ["Add", "Edit", "Inactivate", "Status Change", "Delete"];
+  const changeActionTypes = ["Add", "Edit", "Inactive", "Activate", "Approve", "Reject", "Send Back"];
+  const auditActionTypes = ["Add", "Edit", "Inactivate", "Activate", "Status Change", "Delete"];
   const formSchema = key => {
     const schema = schemas[key] || [];
     if (state.mode !== "add") return schema;
@@ -229,6 +338,8 @@
       const name = String(field.name).toLowerCase();
       if (name.endsWith("status") || name === "status") return false;
       if (name === "displayorder" && key !== "menu-management") return false;
+      // Practice Code is auto-generated on save, so it is not on the Add form.
+      if (name === "code" && key === "requirements") return false;
       return true;
     });
   };
@@ -316,6 +427,25 @@
       { value: "Custom", label: "Custom" }
     ];
     if (!state.lookups["frequency-master"]?.length) state.lookups["frequency-master"] = state.lookups["frequency-types"];
+
+    // Assurance Management (Phase 1) lookups.  Fetched from the dedicated
+    // dbo.cm_get_assurance_repository procedure and merged into the shared
+    // lookup catalogue so Starter Template forms can bind to Assurance
+    // categories, scoring models, workflow templates, etc.
+    try {
+      const assurance = await fetchJson(`${cmApi}/assurance-lookups`);
+      const assuranceItems = apiData(assurance);
+      assuranceItems.forEach(item => {
+        const key = item.LookupKey ?? item.lookupKey;
+        if (!key) return;
+        (state.lookups[key] ||= []).push({ value: item.Value ?? item.value, label: item.Label ?? item.label });
+      });
+    } catch (assuranceLookupError) {
+      // Assurance lookups are only required for Assurance screens.  Do not
+      // block the rest of the Repository Management if the endpoint is not
+      // yet available in this environment.
+      console.warn("Assurance lookups unavailable", assuranceLookupError);
+    }
   }
   function optionsFor(key, selected) {
     const values = Array.isArray(selected) ? selected.map(String) : [String(selected ?? "")];
@@ -601,12 +731,73 @@
     message.textContent = "";
     fieldsHost.querySelectorAll(".field-error").forEach(field => field.classList.remove("field-error"));
     dialog.classList.remove("compact-statement-dialog");
+    dialog.classList.remove("practice-dialog");
+    // Brings the Practice grid and its page heading back when the in-page form
+    // closes (Save, Cancel or Esc).
+    document.body.classList.remove("practice-form-open");
     dialog.classList.remove("obligation-matrix-dialog");
+    // Also covers an Esc-key close while in Edit Mode.
+    state.formReturnToView = false;
     closeCheckboxCombos();
   }
   function closeForm() {
     resetFormState();
     dialog.close();
+  }
+  /* ------------------------------------------------------------------ view/edit
+     The record dialog is a single surface with two modes.  Opening a record
+     always lands in View Mode; the Edit button re-renders the same dialog in
+     Edit Mode without navigating away.  Save and Cancel both come back to
+     View Mode, so the user never loses their place in the grid. */
+  function canEditInDialog() {
+    return permissions.has("EDIT") && !nonEditableAreas.has(cmScreen.Key);
+  }
+  /* The heading carries the mode chip as a child element, so the title text has
+     to be replaced without dropping it. */
+  function setDialogTitle(text) {
+    const host = document.querySelector("#dialogTitle");
+    host.textContent = `${text} `;
+    if (modeChip) host.appendChild(modeChip);
+  }
+  /* Legacy obligation-matrix dialogs drive their own buttons and have no
+     in-place edit switch — reset the shared chrome before they render. */
+  function resetDialogChrome() {
+    state.formReturnToView = false;
+    state.pendingModeSwitch = false;
+    if (editButton) editButton.hidden = true;
+    if (modeChip) modeChip.hidden = true;
+    cancelButton.textContent = "Cancel / Back";
+    dialog.classList.remove("record-dialog-view-mode");
+  }
+  function applyDialogMode(mode) {
+    const readonly = mode === "view";
+    // Edit is offered only on a saved record the user is allowed to edit.
+    if (editButton) editButton.hidden = !(readonly && state.id && canEditInDialog());
+    if (modeChip) {
+      modeChip.hidden = !(readonly || state.formReturnToView);
+      modeChip.textContent = readonly ? "View Mode" : "Edit Mode";
+      modeChip.classList.toggle("is-edit", !readonly);
+    }
+    // Returning from Edit Mode is a cancel; leaving View Mode is a close.
+    cancelButton.textContent = readonly ? "Close" : state.formReturnToView ? "Cancel" : "Cancel / Back";
+    dialog.classList.toggle("record-dialog-view-mode", readonly);
+    // Short cross-fade so the switch reads as one surface changing state
+    // rather than a new dialog appearing.
+    fieldsHost.classList.remove("mode-switching");
+    void fieldsHost.offsetWidth;
+    fieldsHost.classList.add("mode-switching");
+  }
+  async function switchDialogMode(mode) {
+    if (!state.id) return;
+    // openForm() resets the flag from here, so a fresh open from the grid still
+    // starts with a clean slate.
+    state.pendingModeSwitch = mode !== "view";
+    try {
+      await openForm(mode, state.id, state.formContext);
+    } catch (error) {
+      message.textContent = error.message;
+      message.hidden = false;
+    }
   }
   function isFieldLocked(name) {
     return (state.formContext.lockedFields || []).map(String).includes(String(name));
@@ -617,8 +808,12 @@
   }
   function sourceContextParts(record = {}) {
     const releaseId = state.formContext.releaseId || record.ReleaseId || record.releaseId || releaseSelect.value || "";
-    const artifactId = state.formContext.parentArtifactId || record.ArtifactId || record.artifactId || releaseArtifactId() || artifactSelect.value || "";
-    const authorityId = state.formContext.parentAuthorityId || record.AuthorityId || record.authorityId || releaseAuthorityId() || authoritySelect.value || "";
+    // The releases lookup carries the owning artifact and authority, so the
+    // banner follows whatever Release the user picks on the form rather than
+    // whatever the grid happens to be filtered to.
+    const releaseLookup = state.lookups.releases?.find(item => String(item.value) === String(releaseId));
+    const artifactId = state.formContext.parentArtifactId || record.ArtifactId || record.artifactId || releaseLookup?.artifactId || releaseArtifactId() || artifactSelect.value || "";
+    const authorityId = state.formContext.parentAuthorityId || record.AuthorityId || record.authorityId || releaseLookup?.authorityId || releaseAuthorityId() || authoritySelect.value || "";
     return {
       authority: state.formContext.authorityLabel || record.Authority || record.authority || lookupLabel("authorities", authorityId),
       artifact: state.formContext.artifactLabel || [record.ArtifactCode || record.artifactCode, record.Artifact || record.artifact].filter(Boolean).join(" - ") || lookupLabel("artifacts", artifactId),
@@ -627,6 +822,8 @@
   }
   function renderSourceNodeContext(record = {}) {
     if (formEntityKey() !== "source-structure") return;
+    // Re-rendered whenever the Release changes, so clear the previous banner.
+    fieldsHost.querySelector(".source-node-context")?.remove();
     const context = sourceContextParts(record);
     if (!context.authority && !context.artifact && !context.release) return;
     fieldsHost.insertAdjacentHTML("afterbegin", `<section class="source-node-context full" aria-label="Selected release context">
@@ -693,10 +890,45 @@
       window.location.assign(appUrl(`/Repository/ObligationMapping?${params.toString()}`));
       return;
     }
-    // 'obligations' is now a standalone master form (handled via the standard
-    // pipeline below).  The legacy openRequirementObligationForm is left in the
-    // source for backward-compat with the deprecated obligation-mapping mode.
+    if (cmScreen.Key === "obligations") {
+      // Phase 3: Obligation Master is now a full-page form that captures the
+      // master fields, the taxonomy type, that type's typed detail and the
+      // evidence links in one save (entity type 'obligation-composite').
+      // The old generic dialog could not express the conditional typed-detail
+      // section, and the separate "Manage Obligation Type Details" page it
+      // used to rely on has been retired.
+      const params = new URLSearchParams();
+      params.set("mode", mode || "add");
+      if (id) params.set("id", id);
+      window.location.assign(appUrl(`/Repository/ObligationMaster?${params.toString()}`));
+      return;
+    }
+    if (cmScreen.Key === "sla-master") {
+      // SLA Master uses a full-page form (Views/Repository/SlaMasterForm) so
+      // the identity / duration / thresholds sections can be laid out with
+      // their own cards instead of a flat modal grid.  Matches the
+      // ObligationMaster redirect pattern above.
+      const params = new URLSearchParams();
+      params.set("mode", mode || "add");
+      if (id) params.set("id", id);
+      window.location.assign(appUrl(`/Repository/SlaMaster?${params.toString()}`));
+      return;
+    }
+    if (cmScreen.Key === "assurance-occurrences") {
+      // Event Checklists (Phase B).  "Add" raises an event -- its own page
+      // because the subject picker depends on the chosen event type, which
+      // the generic dialog cannot express.  "view"/"edit" open the checklist.
+      if (mode === "add") { window.location.assign(appUrl("/Repository/RaiseEvent")); return; }
+      window.location.assign(appUrl(`/Repository/EventChecklist?id=${encodeURIComponent(id)}`));
+      return;
+    }
+    // The legacy openRequirementObligationForm is left in the source for
+    // backward-compat with the deprecated obligation-mapping mode.
     resetFormState();
+    // True only while Edit Mode was entered from View Mode — it tells Save and
+    // Cancel to come back to View Mode instead of closing the dialog.
+    state.formReturnToView = state.pendingModeSwitch === true;
+    state.pendingModeSwitch = false;
     state.id = id; state.mode = mode; state.formContext = { ...preset }; message.hidden = true;
     const activeKey = formEntityKey();
     let record = { ...preset };
@@ -718,18 +950,40 @@
     if (activeKey === "statement-classifications" && record.ClassificationScheme && !record.scheme) {
       record.scheme = record.ClassificationScheme;
     }
+    // Source Structure: the Release is only selectable when adding a ROOT node.
+    // A child node always belongs to its parent's release, and moving an
+    // existing node between releases would orphan its descendants and the
+    // Source Statements captured under it, so both are locked read-only.
+    if (activeKey === "source-structure" && (id || state.formContext.parentNodeId)) {
+      state.formContext.lockedFields = [...(state.formContext.lockedFields || []), "releaseId"];
+    }
     const readonly = mode === "view";
-    document.querySelector("#dialogTitle").textContent = dialogTitleFor(mode);
+    setDialogTitle(dialogTitleFor(mode));
     document.querySelector("#dialogDescription").textContent = readonly ? "Review repository details." : "Complete the required fields and save your changes.";
+    applyDialogMode(mode);
     fieldsHost.innerHTML = formSchema(activeKey).map(field => fieldMarkup(field, formValueOf(record, field), readonly)).join("");
     renderSourceNodeContext(record);
     dialog.classList.toggle("compact-statement-dialog", activeKey === "framework-statements");
+    // Practice Add / Edit / View is an in-page form, not a pop-up: it carries
+    // the Framework Statement mapping tree and needs the room, but the sidebar
+    // menu and the top bar have to stay visible and usable.  The class pair
+    // below lays the form out inside .content and hides the grid behind it.
+    const practiceInline = activeKey === "requirements";
+    dialog.classList.toggle("practice-dialog", practiceInline);
+    document.body.classList.toggle("practice-form-open", practiceInline);
     fieldsHost.querySelectorAll("[data-checkbox-combo]").forEach(updateCheckboxCombo);
     fieldsHost.querySelectorAll("[data-tag-input]").forEach(updateTagPreview);
     bindEvidenceGrids(fieldsHost);
     updateFrequencyFields();
     saveButton.hidden = readonly; saveButton.textContent = saveTextFor();
-    dialog.showModal();
+    // Re-rendering for a mode switch keeps the dialog open — showModal() throws
+    // if it is called on a dialog that is already showing.
+    if (!dialog.open) {
+      // show() keeps the Practice form out of the top layer so it flows with
+      // the page; every other screen stays a modal dialog.
+      if (practiceInline) { dialog.show(); window.scrollTo({ top: 0 }); }
+      else dialog.showModal();
+    }
     try {
       if (activeKey === "control-requirement-mappings") await refreshRequirementMappingCombo(readonly);
       if (activeKey === "controls") await initControlClassificationForm(record, readonly);
@@ -779,7 +1033,9 @@
       data[field.name] = field.type === "number" && value !== "" ? Number(value) : value;
     }
     if (key === "source-structure") {
-      data.releaseId = state.formContext.releaseId || releaseSelect.value;
+      // The Release now comes from the form field; the form context and the
+      // grid filter are only fallbacks for callers that lock the field.
+      data.releaseId = data.releaseId || state.formContext.releaseId || releaseSelect.value;
       data.parentNodeId = state.formContext.parentNodeId || "";
       if (state.formContext.contextCode) data.contextCode = state.formContext.contextCode;
     }
@@ -818,7 +1074,8 @@
       obligationMatrixState.requirementId = String(preset.requirementId);
     }
 
-    document.querySelector("#dialogTitle").textContent = mode === "view" ? "View Obligation Mapping" : id ? "Edit Obligation Mapping" : "Add Obligation Mapping";
+    resetDialogChrome();
+    setDialogTitle(mode === "view" ? "View Obligation Mapping" : id ? "Edit Obligation Mapping" : "Add Obligation Mapping");
     document.querySelector("#dialogDescription").textContent = "Pick a Requirement, then select the Obligation that applies on each Statement / Release row.";
     saveButton.hidden = mode === "view";
     saveButton.textContent = "Save Mappings";
@@ -958,6 +1215,10 @@
       const appliedRecordId = resultRow.AppliedRecordId || resultRow.appliedRecordId || 0;
       const savedId = state.id || (autoApproved ? appliedRecordId : 0) || resultRow.Id || result.Id || result.id;
       const afterSaveUrl = state.formContext.afterSaveUrl || "";
+      // Edit Mode entered from View Mode returns to View Mode after a
+      // successful save instead of closing.
+      const returnToView = state.formReturnToView && !afterSaveUrl && savedId;
+      const returnContext = { ...state.formContext };
       if (!submittedForApproval && key === "controls" && savedId && controlSourceMapState.nodes.length) await syncControlSourceMappings(savedId);
       closeForm(); await loadLookups();
       if (autoApproved) {
@@ -970,6 +1231,7 @@
         return;
       }
       await load();
+      if (returnToView) await openForm("view", savedId, returnContext);
     } catch (error) { message.textContent = error.message; message.hidden = false; }
   }
   async function refreshSubDomainOptions(selected = "") {
@@ -1567,7 +1829,7 @@
     requirementMapState.statements = statements;
     const section = document.createElement("section");
     section.className = "requirement-control-map full";
-    section.innerHTML = `<div class="requirement-control-head"><div><strong>Framework Statement Mapping</strong><small id="reqSelectedCount">0 selected</small></div><input type="search" id="requirementControlSearch" placeholder="Search source structure or framework statements..."></div><div class="control-source-note">Release → Source Structure → Framework Statements. Source Structure nodes act as folders; select Framework Statements to map them to this Requirement.</div><div id="requirementControlTree" class="requirement-control-tree"></div>`;
+    section.innerHTML = `<div class="requirement-control-head"><div><strong>Framework Statement Mapping</strong><small id="reqSelectedCount">0 selected</small></div><input type="search" id="requirementControlSearch" placeholder="Search source structure or framework statements..."></div><div class="control-source-note">Release → Source Structure → Framework Statements. Source Structure nodes act as folders; select Framework Statements to map them to this Practice.</div><div id="requirementControlTree" class="requirement-control-tree"></div>`;
     fieldsHost.append(section);
     renderRequirementControlTree();
   }
@@ -1687,7 +1949,8 @@
     }
     obligationState.requirement = requirementId ? (await fetchRows("requirements", { id: requirementId }))[0] || {} : {};
     obligationState.contexts = requirementId ? await hydrateObligationEvidence(await fetchRows("obligations", { requirementId, status: "" })) : [];
-    document.querySelector("#dialogTitle").textContent = mode === "view" ? "View Obligation" : id ? "Edit Obligation" : "Add Obligation";
+    resetDialogChrome();
+    setDialogTitle(mode === "view" ? "View Obligation" : id ? "Edit Obligation" : "Add Obligation");
     document.querySelector("#dialogDescription").textContent = mode === "view" ? "Review obligation details." : "Capture obligation and evidence details for each mapped framework release.";
     saveButton.hidden = mode === "view";
     saveButton.textContent = id ? "Update" : "Save";
@@ -1701,7 +1964,8 @@
     state.formContext = { requirementId: id, lockRequirement: true };
     obligationState.requirement = (await fetchRows("requirements", { id }))[0] || null;
     obligationState.contexts = await hydrateObligationEvidence(await fetchRows("obligations", { requirementId: id, status: "" }));
-    document.querySelector("#dialogTitle").textContent = "Practice Obligations";
+    resetDialogChrome();
+    setDialogTitle("Practice Obligations");
     document.querySelector("#dialogDescription").textContent = "Capture release-specific obligations and evidence expectations for this practice.";
     saveButton.hidden = false;
     saveButton.textContent = "Save Obligations";
@@ -1831,11 +2095,72 @@
       message.hidden = false;
     } catch (error) { message.textContent = error.message; message.hidden = false; }
   }
-  async function retire(id) {
-    if (!await appConfirm(`Mark this ${entityLabel().singular.toLowerCase()} inactive or retired? Historical data will remain available.`, { confirmText: "Mark Inactive" })) return;
+  // Labels for the entity keys the cascade preview reports back.
+  const cascadeEntityLabels = {
+    "artifacts": ["Regulatory Artifact", "Regulatory Artifacts"],
+    "releases": ["Artifact Release", "Artifact Releases"],
+    "source-structure": ["Source Structure node", "Source Structure nodes"],
+    "statement-classifications": ["Source Classification", "Source Classifications"],
+    "framework-statements": ["Source Statement", "Source Statements"],
+    "source-control-map": ["Source - Control mapping", "Source - Control mappings"],
+    "statement-control-map": ["Statement - Control mapping", "Statement - Control mappings"],
+    "statement-requirement-map": ["Statement - Practice mapping", "Statement - Practice mappings"]
+  };
+  function cascadeLine(row) {
+    const key = String(row.EntityType ?? row.entityType ?? "");
+    const count = Number(row.RecordCount ?? row.recordCount ?? 0);
+    const label = cascadeEntityLabels[key] || [key, key];
+    return `${count} ${count === 1 ? label[0] : label[1]}`;
+  }
+  /* Deactivating a parent takes its whole subtree down with it, so ask the
+     server what that subtree contains and put the numbers in front of the user
+     before they confirm. A failed preview must not block the action itself. */
+  async function cascadeImpact(id) {
     try {
-      await fetchJson(`${cmApi}/${cmScreen.Key}/${id}/retire`, { method:"POST", headers:{ "Content-Type":"application/json", "X-CSRF-TOKEN":csrfToken }, body:"{}" });
+      const result = await fetchJson(`${cmApi}/${cmScreen.Key}/${id}/deactivation-impact`, { method:"POST", headers:{ "Content-Type":"application/json", "X-CSRF-TOKEN":csrfToken }, body:"{}" });
+      return apiData(result).filter(row => Number(row.RecordCount ?? row.recordCount ?? 0) > 0);
+    } catch { return []; }
+  }
+  /* Retire and Activate both run through the maker-checker gate, which parks
+     the request as a change request instead of changing the record.  Without
+     this the grid simply reloads unchanged and it looks like the action did
+     nothing — the single most confusing thing about these two buttons. */
+  async function reportWorkflowOutcome(result, pendingMessage, approvedMessage) {
+    const status = String(apiData(result)[0]?.Status || apiData(result)[0]?.status || "").toLowerCase();
+    if (status === "pending approval") await appAlert(pendingMessage, "success", "Submitted for Approval");
+    else if (status === "auto approved") await appAlert(approvedMessage, "success", "Auto Approved");
+    return status;
+  }
+  async function retire(id) {
+    const label = entityLabel().singular.toLowerCase();
+    const impact = await cascadeImpact(id);
+    const warning = impact.length
+      ? `\n\nThis will also deactivate everything beneath it:\n${impact.map(row => `• ${cascadeLine(row)}`).join("\n")}\n\nActivating this ${label} again will restore them.`
+      : "";
+    if (!await appConfirm(`Mark this ${label} inactive or retired? Historical data will remain available.${warning}`, {
+      confirmText: "Mark Inactive",
+      title: impact.length ? "This will deactivate more than one record" : "Please confirm"
+    })) return;
+    try {
+      const result = await fetchJson(`${cmApi}/${cmScreen.Key}/${id}/retire`, { method:"POST", headers:{ "Content-Type":"application/json", "X-CSRF-TOKEN":csrfToken }, body:"{}" });
       await loadLookups(); await load();
+      await reportWorkflowOutcome(result,
+        `Deactivation submitted for approval. This ${label} stays Active until a checker approves the request in Change Management.`,
+        "Deactivation saved and auto-approved.");
+    } catch (error) { await appAlert(error.message, "error"); }
+  }
+  /* Mirror of retire().  On the maker-checker areas the SP raises an 'Activate'
+     change request instead of flipping the status, so report that back rather
+     than implying the record is already live. */
+  async function activate(id) {
+    const label = entityLabel().singular.toLowerCase();
+    if (!await appConfirm(`Activate this ${label}? Its status will be set back to Active, along with anything its deactivation took down.`, { confirmText: "Activate" })) return;
+    try {
+      const result = await fetchJson(`${cmApi}/${cmScreen.Key}/${id}/activate`, { method:"POST", headers:{ "Content-Type":"application/json", "X-CSRF-TOKEN":csrfToken }, body:"{}" });
+      await loadLookups(); await load();
+      await reportWorkflowOutcome(result,
+        `Activation submitted for approval. This ${label} stays inactive until a checker approves the request in Change Management.`,
+        "Activation saved and auto-approved.");
     } catch (error) { await appAlert(error.message, "error"); }
   }
   async function resetUserPassword(id) {
@@ -1848,8 +2173,21 @@
       await load();
     } catch (error) { await appAlert(error.message, "error"); }
   }
+  // How many change requests a checker action will actually affect.  Bundled
+  // rows (031/032) are approved / rejected as one unit by the database, so
+  // the prompt must say so -- the checker is never actioning just the row
+  // they clicked.
+  function bundleScopeNote(id) {
+    if (cmScreen.Key !== "change-management") return "";
+    const row = (state.records || []).find(r => String(r.Id) === String(id));
+    const count = Number(row?.BundleCount ?? row?.bundleCount ?? 1);
+    if (!row?.BundleId || count <= 1) return "";
+    return `This change request is part of a linked set of ${count}. `
+         + `All ${count} will be actioned together — they cannot be actioned individually.\n\n`;
+  }
   async function approve(id) {
-    const comments = await appPrompt("Approval comments are optional.", { title: "Approve Change", confirmText: "Approve" });
+    const scope = bundleScopeNote(id);
+    const comments = await appPrompt(`${scope}Approval comments are optional.`, { title: scope ? "Approve Linked Changes" : "Approve Change", confirmText: "Approve" });
     if (comments === null) return;
     try {
       await fetchJson(`${cmApi}/${cmScreen.Key}/${id}/approve`, { method:"POST", headers:{ "Content-Type":"application/json", "X-CSRF-TOKEN":csrfToken }, body:JSON.stringify({ comments }) });
@@ -1858,7 +2196,8 @@
   }
   async function checkerAction(id, action) {
     const label = action === "reject" ? "Reject" : "Send Back";
-    const comments = await appPrompt(`${label} comments are mandatory.`, { title: label, confirmText: label });
+    const scope = bundleScopeNote(id);
+    const comments = await appPrompt(`${scope}${label} comments are mandatory.`, { title: scope ? `${label} Linked Changes` : label, confirmText: label });
     if (comments === null) return;
     if (!comments.trim()) { await appAlert("Checker comments are mandatory.", "warning"); return; }
     try {
@@ -1866,22 +2205,40 @@
       await load();
     } catch (error) { await appAlert(error.message, "error"); }
   }
+  /* ------------------------------------------------------- status toggle ---
+     A row is either Active or it is not, and the 3-dots menu offers exactly one
+     of the two transitions accordingly:  Active -> Inactive,  Inactive ->
+     Activate.  Both are gated on the DELETE permission, so whoever may
+     deactivate a record may also bring it back. */
+  const inactiveStatuses = new Set(["inactive", "retired", "archived"]);
+  function rowById(id) {
+    return (state.records || []).find(row => String(row.Id ?? row.id) === String(id)) || {};
+  }
+  function isRowInactive(id) {
+    return inactiveStatuses.has(String(rowById(id).Status ?? rowById(id).status ?? "").trim().toLowerCase());
+  }
+  function statusToggleAction(id) {
+    if (!permissions.has("DELETE")) return "";
+    return isRowInactive(id)
+      ? `<button type="button" class="action-menu-item" data-action="activate" data-id="${id}"><i class="fa-solid fa-rotate-left"></i> Activate</button>`
+      : `<button type="button" class="action-menu-item danger" data-action="retire" data-id="${id}"><i class="fa-solid fa-ban"></i> Inactive</button>`;
+  }
   function actionMenuItems(id, kind = "") {
     if (cmScreen.Key === "authorities") {
       const label = entityLabel(cmScreen.Key);
       const addArtifactAction = permissions.has("ADD") ? `<button type="button" class="action-menu-item" data-action="add-artifact" data-id="${id}"><i class="fa-solid fa-file-circle-plus"></i> Add Artifact</button>` : "";
-      return `<button type="button" class="action-menu-item" data-action="view" data-id="${id}"><i class="fa-solid fa-eye"></i> ${escapeHtml(label.view)}</button>${addArtifactAction}${permissions.has("EDIT") ? `<button type="button" class="action-menu-item" data-action="edit" data-id="${id}"><i class="fa-solid fa-pen"></i> ${escapeHtml(label.edit)}</button>` : ""}${permissions.has("DELETE") ? `<button type="button" class="action-menu-item danger" data-action="retire" data-id="${id}"><i class="fa-solid fa-ban"></i> Inactive</button>` : ""}`;
+      return `<button type="button" class="action-menu-item" data-action="view" data-id="${id}"><i class="fa-solid fa-eye"></i> ${escapeHtml(label.view)}</button>${addArtifactAction}${permissions.has("EDIT") ? `<button type="button" class="action-menu-item" data-action="edit" data-id="${id}"><i class="fa-solid fa-pen"></i> ${escapeHtml(label.edit)}</button>` : ""}${statusToggleAction(id)}`;
     }
     if (cmScreen.Key === "artifacts") {
       const label = entityLabel(cmScreen.Key);
       const addReleaseAction = permissions.has("ADD") ? `<button type="button" class="action-menu-item" data-action="add-release" data-id="${id}"><i class="fa-solid fa-tag"></i> Add Release</button>` : "";
-      return `<button type="button" class="action-menu-item" data-action="view" data-id="${id}"><i class="fa-solid fa-eye"></i> ${escapeHtml(label.view)}</button>${addReleaseAction}${permissions.has("EDIT") ? `<button type="button" class="action-menu-item" data-action="edit" data-id="${id}"><i class="fa-solid fa-pen"></i> ${escapeHtml(label.edit)}</button>` : ""}${permissions.has("DELETE") ? `<button type="button" class="action-menu-item danger" data-action="retire" data-id="${id}"><i class="fa-solid fa-ban"></i> Inactive</button>` : ""}`;
+      return `<button type="button" class="action-menu-item" data-action="view" data-id="${id}"><i class="fa-solid fa-eye"></i> ${escapeHtml(label.view)}</button>${addReleaseAction}${permissions.has("EDIT") ? `<button type="button" class="action-menu-item" data-action="edit" data-id="${id}"><i class="fa-solid fa-pen"></i> ${escapeHtml(label.edit)}</button>` : ""}${statusToggleAction(id)}`;
     }
     if (cmScreen.Key === "source-structure") {
       const childAction = permissions.has("ADD") ? `<button type="button" class="action-menu-item" data-action="add-child" data-id="${id}"><i class="fa-solid fa-plus"></i> Add Child Node</button>` : "";
-      const statementAction = permissions.has("ADD") ? `<button type="button" class="action-menu-item" data-action="add-statement" data-id="${id}"><i class="fa-solid fa-file-lines"></i> Add Framework Statement</button>` : "";
+      const statementAction = permissions.has("ADD") ? `<button type="button" class="action-menu-item" data-action="add-statement" data-id="${id}"><i class="fa-solid fa-file-lines"></i> Add Source Statement</button>` : "";
       const editAction = permissions.has("EDIT") ? `<button type="button" class="action-menu-item" data-action="edit" data-id="${id}"><i class="fa-solid fa-pen"></i> Edit Source Node</button>` : "";
-      const deleteAction = permissions.has("DELETE") ? `<button type="button" class="action-menu-item danger" data-action="retire" data-id="${id}"><i class="fa-solid fa-ban"></i> Inactive</button>` : "";
+      const deleteAction = statusToggleAction(id);
       return `${childAction}${statementAction}<button type="button" class="action-menu-item" data-action="view" data-id="${id}"><i class="fa-solid fa-eye"></i> View Source Node</button>${editAction}${deleteAction}`;
     }
     if (cmScreen.Key === "obligations" && kind === "requirement") {
@@ -1891,7 +2248,7 @@
       const sourceStructureAction = permissions.has("ADD") ? `<button type="button" class="action-menu-item" data-action="add-source-structure" data-id="${id}"><i class="fa-solid fa-diagram-project"></i> Add Source Structure</button>` : "";
       const classificationAction = permissions.has("ADD") ? `<button type="button" class="action-menu-item" data-action="add-statement-classification" data-id="${id}"><i class="fa-solid fa-layer-group"></i> Add Source Classification</button>` : "";
       const label = entityLabel(cmScreen.Key);
-      return `<button type="button" class="action-menu-item" data-action="view" data-id="${id}"><i class="fa-solid fa-eye"></i> ${escapeHtml(label.view)}</button>${sourceStructureAction}${classificationAction}${permissions.has("EDIT") ? `<button type="button" class="action-menu-item" data-action="edit" data-id="${id}"><i class="fa-solid fa-pen"></i> ${escapeHtml(label.edit)}</button>` : ""}${permissions.has("DELETE") ? `<button type="button" class="action-menu-item danger" data-action="retire" data-id="${id}"><i class="fa-solid fa-ban"></i> Inactive</button>` : ""}`;
+      return `<button type="button" class="action-menu-item" data-action="view" data-id="${id}"><i class="fa-solid fa-eye"></i> ${escapeHtml(label.view)}</button>${sourceStructureAction}${classificationAction}${permissions.has("EDIT") ? `<button type="button" class="action-menu-item" data-action="edit" data-id="${id}"><i class="fa-solid fa-pen"></i> ${escapeHtml(label.edit)}</button>` : ""}${statusToggleAction(id)}`;
     }
     if (cmScreen.Key === "change-management") {
       const row = state.records.find(item => String(item.Id) === String(id)) || {};
@@ -1901,7 +2258,10 @@
       return `<button type="button" class="action-menu-item" data-action="view" data-id="${id}"><i class="fa-solid fa-eye"></i> View Change</button>${approve}${reject}`;
     }
     const childAction = "";
-    const obligationAction = cmScreen.Key === "requirements" && permissions.has("EDIT") ? `<button type="button" class="action-menu-item" data-action="obligations" data-id="${id}"><i class="fa-solid fa-calendar-check"></i> Obligations</button>` : "";
+    // Obligations are maintained on the Obligation Master and the
+    // Practices - Obligation Mapping screens; the Practices row menu keeps
+    // only Practice actions.
+    const obligationAction = "";
     const mapControlsAction = cmScreen.Key === "framework-statements" && permissions.has("EDIT") ? `<button type="button" class="action-menu-item" data-action="map-controls" data-id="${id}"><i class="fa-solid fa-sitemap"></i> Map Controls</button>` : "";
     const approveAction = approvalAreas.has(cmScreen.Key) && permissions.has("APPROVE")
       ? `<button type="button" class="action-menu-item" data-action="approve" data-id="${id}"><i class="fa-solid fa-check"></i> Approve</button>`
@@ -1909,9 +2269,38 @@
     const resetPasswordAction = cmScreen.Key === "user-management" && permissions.has("EDIT")
       ? `<button type="button" class="action-menu-item" data-action="reset-password" data-id="${id}"><i class="fa-solid fa-key"></i> Reset Password</button>`
       : "";
+    // Assurance Management (Phase 1) lifecycle actions.  Draft -> Review ->
+    // Approved -> Published -> Retired.  Buttons are visible only when the
+    // current row lifecycle allows the transition AND the user has the
+    // matching permission on the area.
+    let assuranceActions = "";
+    if (typeof cmScreen.Key === "string" && cmScreen.Key.startsWith("assurance-") && cmScreen.Key !== "assurance-version-history") {
+      const row = state.records.find(item => String(item.Id) === String(id)) || {};
+      const lc = String(row.LifecycleStatus || "").toLowerCase();
+      if (lc === "draft" && permissions.has("EDIT"))
+        assuranceActions += `<button type="button" class="action-menu-item" data-action="assurance-submit" data-id="${id}"><i class="fa-solid fa-paper-plane"></i> Submit for Review</button>`;
+      if (lc === "review" && permissions.has("APPROVE"))
+        assuranceActions += `<button type="button" class="action-menu-item" data-action="approve" data-id="${id}"><i class="fa-solid fa-check"></i> Approve</button><button type="button" class="action-menu-item danger" data-action="reject" data-id="${id}"><i class="fa-solid fa-xmark"></i> Reject</button>`;
+      if ((lc === "approved" || lc === "published") && permissions.has("APPROVE"))
+        assuranceActions += `<button type="button" class="action-menu-item" data-action="assurance-publish" data-id="${id}"><i class="fa-solid fa-upload"></i> ${lc === "published" ? "Publish New Version" : "Publish"}</button>`;
+      if (lc === "published" && permissions.has("APPROVE"))
+        assuranceActions += `<button type="button" class="action-menu-item danger" data-action="assurance-retire-published" data-id="${id}"><i class="fa-solid fa-box-archive"></i> Retire</button>`;
+    }
     const label = entityLabel(cmScreen.Key);
-    const editActions = cmScreen.Key === "audit-trace" ? "" : `${childAction}${obligationAction}${mapControlsAction}${permissions.has("EDIT") ? `<button type="button" class="action-menu-item" data-action="edit" data-id="${id}"><i class="fa-solid fa-pen"></i> ${escapeHtml(label.edit)}</button>` : ""}${resetPasswordAction}${approveAction}${permissions.has("DELETE") ? `<button type="button" class="action-menu-item danger" data-action="retire" data-id="${id}"><i class="fa-solid fa-ban"></i> Inactive</button>` : ""}`;
+    const editActions = cmScreen.Key === "audit-trace" || cmScreen.Key === "assurance-version-history" ? "" : `${childAction}${obligationAction}${mapControlsAction}${permissions.has("EDIT") ? `<button type="button" class="action-menu-item" data-action="edit" data-id="${id}"><i class="fa-solid fa-pen"></i> ${escapeHtml(label.edit)}</button>` : ""}${resetPasswordAction}${approveAction}${assuranceActions}${statusToggleAction(id)}`;
     return `<button type="button" class="action-menu-item" data-action="view" data-id="${id}"><i class="fa-solid fa-eye"></i> ${escapeHtml(label.view)}</button>${editActions}`;
+  }
+  async function assuranceLifecycleAction(id, action) {
+    // Ask for optional remarks — checker comments / publication notes are
+    // captured on the immutable version history row.
+    const titles = { "submit": "Submit for Review", "publish": "Publish", "retire-published": "Retire Published" };
+    const comments = await appPrompt(`${titles[action] || "Lifecycle Action"} - optional remarks.`, { title: titles[action] || "Lifecycle Action", confirmText: titles[action] || "Continue" });
+    if (comments === null) return;
+    const endpoint = action === "retire-published" ? "retire-published" : action;
+    try {
+      await fetchJson(`${cmApi}/${cmScreen.Key}/${id}/${endpoint}`, { method:"POST", headers:{ "Content-Type":"application/json", "X-CSRF-TOKEN":csrfToken }, body:JSON.stringify({ comments }) });
+      await load();
+    } catch (error) { await appAlert(error.message, "error"); }
   }
   function actionMenu(id, kind = "") {
     return `<div class="row-actions"><button type="button" class="action-menu-trigger" aria-label="Open actions menu" aria-haspopup="true" aria-expanded="false" data-menu-trigger data-id="${id}" data-menu-kind="${escapeHtml(kind)}"><i class="fas fa-ellipsis-v fa-solid fa-ellipsis-vertical" aria-hidden="true"></i></button></div>`;
@@ -1943,10 +2332,14 @@
     closeMenus();
     const id = Number(button.dataset.id);
     if (button.dataset.action === "retire") retire(id);
+    else if (button.dataset.action === "activate") activate(id);
     else if (button.dataset.action === "reset-password") resetUserPassword(id);
     else if (button.dataset.action === "approve") approve(id);
     else if (button.dataset.action === "reject") checkerAction(id, "reject");
     else if (button.dataset.action === "send-back") checkerAction(id, "send-back");
+    else if (button.dataset.action === "assurance-submit") assuranceLifecycleAction(id, "submit");
+    else if (button.dataset.action === "assurance-publish") assuranceLifecycleAction(id, "publish");
+    else if (button.dataset.action === "assurance-retire-published") assuranceLifecycleAction(id, "retire-published");
     else if (button.dataset.action === "add-child") addChildNode(id);
     else if (button.dataset.action === "add-artifact") openArtifactForAuthority(state.records.find(row => String(row.Id) === String(id)) || { Id: id }).catch(error => alert(error.message));
     else if (button.dataset.action === "add-release") openReleaseForArtifact(state.records.find(row => String(row.Id) === String(id)) || { Id: id }).catch(error => alert(error.message));
@@ -2179,13 +2572,17 @@
     window.history.replaceState({}, "", appUrl(`/Repository/Index/${cmScreen.Key}`));
   }
   function addRootNode() {
-    const releaseId = releaseSelect.value || "";
-    const contextCode = state.navigationContext?.filterType === "Release" ? state.navigationCode : "";
-    if (!releaseId && !contextCode) {
-      alert("Select a Release first, then add the root node for that release.");
-      return;
-    }
-    openForm("add", 0, { releaseId, contextCode, parentNodeId: "", status: "Active" });
+    // The Release is chosen on the form.  Whatever the grid is filtered to --
+    // the filter dropdown or a drill-down from Releases -- is pre-selected as
+    // a convenience, but no filter is required to open the form.
+    // contextCode is deliberately not sent: the gateway would overwrite
+    // releaseId with the context's release and silently ignore the user's
+    // choice (see ApplyNavigationContext).
+    const contextReleaseId = state.navigationContext?.filterType === "Release"
+      ? String(state.navigationContext.filterId || "")
+      : "";
+    const releaseId = releaseSelect.value || contextReleaseId || "";
+    openForm("add", 0, { releaseId, parentNodeId: "", status: "Active" });
   }
   function addChildNode(id) {
     const parent = state.records.find(row => Number(row.Id) === id);
@@ -2220,7 +2617,7 @@
     window.location.assign(appUrl(`/Repository/Statement?mode=add&releaseId=${encodeURIComponent(node.ReleaseId || "")}&nodeId=${encodeURIComponent(node.Id || "")}`));
   }
   function renderSourceStructureRows() {
-    const flattened = flattenTree(state.records);
+    const flattened = flattenTree(pageTreeRoots(state.records));
     if (!flattened.length) return `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">No records found</td></tr>`;
     return flattened.map(({ row, depth, hasChildren }) => {
       const nodeId = String(row.Id), collapsed = state.collapsed.has(nodeId);
@@ -2237,7 +2634,13 @@
   function renderFrameworkStatementRows() {
     const nodes = state.frameworkStatementNodes || [];
     const statements = state.records || [];
-    if (!nodes.length) return `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">No source structure configured for the selected filters.</td></tr>`;
+    // Both early returns clear the total: the pager is refreshed from
+    // state.gridTotal straight after this render, and a stale count from the
+    // previous filter would leave it advertising pages that no longer exist.
+    if (!nodes.length) {
+      state.gridTotal = 0;
+      return `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">No source structure configured for the selected filters.</td></tr>`;
+    }
     const statementsByNode = statements.reduce((map, statement) => {
       const key = String(statement.StructureNodeId || statement.structureNodeId || "");
       (map[key] ||= []).push(statement);
@@ -2255,8 +2658,7 @@
         || sameText(statement.StatementText, node.Title));
     const statementRowMarkup = (statement, depth) => `<tr class="tree-row framework-statement-row" data-statement-id="${escapeHtml(statement.Id)}" data-tree-depth="${depth}">
         <td><span class="tree-node statement-node" style="--tree-depth:${depth}"><span class="tree-toggle-spacer"></span><span class="tree-reference">${escapeHtml(statement.StatementReference || "")}</span></span></td>
-        <td><span class="tree-title" title="${escapeHtml(statement.StatementTitle || "")}">${escapeHtml(statement.StatementTitle || "")}</span></td>
-        <td><span class="tree-description" title="${escapeHtml(statement.StatementText || "")}">${escapeHtml(statement.StatementText || "")}</span></td>
+        <td><span class="tree-title" title="${escapeHtml(statement.StatementText || statement.StatementTitle || "")}">${escapeHtml(statement.StatementTitle || "")}</span></td>
         <td>${escapeHtml(statement.Classification || "")}</td>
         <td>${badge(statement.Status || "")}</td>
         <td>${actionMenu(statement.Id)}</td>
@@ -2269,24 +2671,75 @@
         if (text.includes(search)) matchedNodeIds.add(String(statement.StructureNodeId || ""));
       });
     }
-    const visibleNodes = search ? includeAncestors(nodes, matchedNodeIds) : nodes;
-    if (search && !matchedNodeIds.size) return `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">No Framework Statements found.</td></tr>`;
-    const flattened = flattenTree(visibleNodes);
-    const sourceRows = flattened.map(({ row, depth, hasChildren }) => {
+    if (search && !matchedNodeIds.size) {
+      state.gridTotal = 0;
+      return `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">No Source Statements found.</td></tr>`;
+    }
+    const flattened = flattenTree(search ? includeAncestors(nodes, matchedNodeIds) : nodes);
+    // This grid is paged by STATEMENT, not by structure node.  The statements
+    // are the records the user counts, so they are what the pager reports and
+    // slices; node rows are headers that travel with whichever statements land
+    // on the current page, so a statement is never shown without the branch it
+    // belongs to.  Source Structure, whose rows really are nodes, still pages
+    // by root -- see renderSourceStructureRows() / pageTreeRoots().
+    //
+    // Paging by node root here reported the root count (a handful) as the
+    // record count while rendering every statement underneath, which left the
+    // pager stuck on a single page reading "1-3 of 3" over ~93 visible rows.
+    const plan = flattened.map(({ row, depth, hasChildren }) => {
       const nodeId = String(row.Id), collapsed = state.collapsed.has(nodeId);
       const nodeStatements = statementsByNode[nodeId] || [];
-      const visibleStatements = hasChildren ? nodeStatements.filter(statement => !isMirrorStatement(statement, row)) : nodeStatements;
+      // A "mirror" statement just repeats the node's own reference/title, so it is
+      // filtered out at every level -- the node row already shows that text.  This
+      // used to be applied only to parent nodes, which meant a leaf node carrying
+      // real statements lost its own row (see the leaf branch below).
+      const visibleStatements = nodeStatements.filter(statement => !isMirrorStatement(statement, row));
+      // Leaf node whose only statements mirror the node itself: the statement rows
+      // stand in for the node row, otherwise the same text would render twice and
+      // the mirrored record would have no action menu.
+      const mirrorLeaf = !hasChildren && !visibleStatements.length && nodeStatements.length > 0;
+      // A collapsed node contributes nothing to the page, so the count matches
+      // what is actually on screen.
+      const pageable = mirrorLeaf ? nodeStatements : (collapsed ? [] : visibleStatements);
+      return { row, depth, hasChildren, nodeId, collapsed, mirrorLeaf, pageable };
+    });
+    const pageableStatements = plan.flatMap(entry => entry.pageable);
+    state.gridTotal = pageableStatements.length;
+    const pageSize = Math.max(1, state.gridPageSize);
+    const lastStatementPage = Math.max(1, Math.ceil(pageableStatements.length / pageSize));
+    if (state.gridPage > lastStatementPage) state.gridPage = lastStatementPage;
+    const onPageIds = new Set(pageableStatements
+      .slice(gridPageStart(), gridPageStart() + pageSize)
+      .map(statement => String(statement.Id)));
+    // Keep the nodes hosting this page's statements, plus their ancestors, so
+    // the branch still reads top-down instead of starting mid-tree.
+    const parentOf = new Map(nodes.map(item => [String(item.Id), String(item.ParentNodeId || "")]));
+    const keepNodes = new Set();
+    plan.forEach(entry => {
+      if (!entry.pageable.some(statement => onPageIds.has(String(statement.Id)))) return;
+      let current = entry.nodeId;
+      while (current && !keepNodes.has(current)) { keepNodes.add(current); current = parentOf.get(current) || ""; }
+    });
+    // Structure but no statements yet: keep showing the tree, so the screen
+    // still tells the user where statements would go.
+    const structureOnly = pageableStatements.length === 0;
+    const sourceRows = plan.map(entry => {
+      const { row, depth, hasChildren, nodeId, collapsed, mirrorLeaf } = entry;
+      if (!structureOnly && !keepNodes.has(nodeId)) return "";
+      const statementsOnPage = entry.pageable.filter(statement => onPageIds.has(String(statement.Id)));
+      if (mirrorLeaf) return statementsOnPage.map(statement => statementRowMarkup(statement, depth)).join("");
       const toggle = hasChildren ? `<button type="button" class="tree-toggle" data-tree-toggle="${escapeHtml(nodeId)}" aria-label="${collapsed ? "Expand" : "Collapse"} ${escapeHtml(row.Reference)}"><i class="fa-solid fa-chevron-${collapsed ? "right" : "down"}"></i></button>` : `<span class="tree-toggle-spacer"></span>`;
-      const nodeRow = `<tr class="tree-row framework-node-row${hasChildren ? " tree-parent-row" : ""}" data-tree-node-id="${escapeHtml(nodeId)}" data-tree-depth="${depth}">
+      // The node itself is context, not an editable row here — but its status
+      // has to be visible, or a deactivated branch looks identical to a live one.
+      const nodeInactive = inactiveStatuses.has(String(row.Status || "").trim().toLowerCase());
+      const nodeRow = `<tr class="tree-row framework-node-row${hasChildren ? " tree-parent-row" : ""}${nodeInactive ? " tree-row-inactive" : ""}" data-tree-node-id="${escapeHtml(nodeId)}" data-tree-depth="${depth}">
         <td><span class="tree-node" style="--tree-depth:${depth}">${toggle}<span class="tree-reference">${escapeHtml(row.Reference)}</span></span></td>
-        <td colspan="4"><span class="tree-title" title="${escapeHtml(row.Title || "")}">${escapeHtml(row.Title || "")}</span></td>
-        <td></td>
+        <td colspan="3"><span class="tree-title" title="${escapeHtml(row.Title || "")}">${escapeHtml(row.Title || "")}</span></td>
+        <td>${nodeInactive ? badge(row.Status) : ""}</td>
       </tr>`;
-      const statementRows = visibleStatements.map(statement => statementRowMarkup(statement, hasChildren ? depth + 1 : depth)).join("");
-      if (!hasChildren && statementRows) return statementRows;
-      return `${nodeRow}${collapsed ? "" : statementRows}`;
+      return `${nodeRow}${statementsOnPage.map(statement => statementRowMarkup(statement, depth + 1)).join("")}`;
     }).join("");
-    return sourceRows || `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">No Framework Statements found.</td></tr>`;
+    return sourceRows || `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">No Source Statements found.</td></tr>`;
   }
   function parseEvidenceRows(row) {
     try {
@@ -2317,9 +2770,24 @@
     const obligations = state.records || [];
     const colCount = cmScreen.Columns.length + 1;   // +1 for the Actions column
     if (!obligations.length) return `<tr><td colspan="${colCount}" class="empty">No Practice Obligations found.</td></tr>`;
+    // Mapping children start collapsed.  The pager counts obligations, so with
+    // every obligation expanded a page of 10 could put fifty-odd rows on screen
+    // and the row count stopped matching the "of N records" label.  Collapsed by
+    // default, a page shows exactly the obligations it says it does.
+    //
+    // Seeding is per obligation id and remembered, so this only applies the
+    // default once: an obligation the user has expanded stays expanded across
+    // re-renders and reloads, while obligations arriving from a new filter are
+    // still collapsed when they first appear.
+    obligations.forEach(ob => {
+      const id = String(ob.Id || ob.ObligationId || "");
+      if (!id || obligationCollapseSeeded.has(id)) return;
+      obligationCollapseSeeded.add(id);
+      state.collapsed.add(`obligation-${id}`);
+    });
     // Parent rows are sorted alphabetically by Obligation Name.
-    const sorted = [...obligations].sort((a, b) =>
-      String(obligationName(a)).localeCompare(String(obligationName(b))));
+    const sorted = pageRows([...obligations].sort((a, b) =>
+      String(obligationName(a)).localeCompare(String(obligationName(b)))));
     return sorted.map(ob => {
       const id = String(ob.Id || ob.ObligationId || "");
       const toggleKey = `obligation-${id}`;
@@ -2334,15 +2802,30 @@
           </button>
           <span class="tree-reference">${escapeHtml(obligationName(ob))}</span>
         </span></td>
-        <td>${escapeHtml(ob.ExecutionFrequency || "")}</td>
-        <td>${escapeHtml(ob.AssuranceFrequency || "")}</td>
-        <td>${escapeHtml(ob.RetentionPeriod || ob.RetentionRequirement || "")}</td>
         <td>${evidenceCount}</td>
         <td>${mappingCount}</td>
         <td>${badge(ob.Status || "Active")}</td>
         <td>${actionMenu(id)}</td>
       </tr>`;
       if (collapsed) return parent;
+      // Child rows reuse the parent's columns for entirely different values --
+      // a Practice sits under "Obligation Name", and the release context plus
+      // its source statement occupy the two count columns.  One grid header
+      // cannot describe both shapes, so the child block carries its own rather
+      // than leaving the reader to match values against labels that never
+      // applied to them.  Rendered only when there is at least one mapping.
+      //
+      // Authority / Artifact / Release used to have a column each, back when
+      // the parent row had seven columns to lend.  With four they share one
+      // cell above the statement: they are the address of the statement, not
+      // four independent facts, so stacking them reads better than three
+      // cramped columns would.
+      const childHeader = mappings.length ? `<tr class="obligation-child-header-row">
+        <td><span class="tree-node" style="--tree-depth:1"><span class="tree-toggle-spacer"></span>Practice</span></td>
+        <td colspan="2">Release / Source Statement</td>
+        <td>Status</td>
+        <td></td>
+      </tr>` : "";
       let childRows;
       if (mappings.length === 0) {
         childRows = `<tr class="tree-row obligation-mapping-row" data-obligation-id="${escapeHtml(id)}" data-tree-depth="1">
@@ -2350,22 +2833,39 @@
           <td colspan="${colCount - 1}"></td>
         </tr>`;
       } else {
-        childRows = mappings.map(m => `<tr class="tree-row obligation-mapping-row" data-obligation-id="${escapeHtml(id)}" data-tree-depth="1">
+        // The Source Statement is what separates two mappings that share the
+        // same Practice, Artifact and Release.  Migration 021 replaced the old
+        // UNIQUE(obligation, requirement, release) with
+        // UNIQUE(requirement, release, framework_statement, obligation), so the
+        // same practice/release pair may legitimately appear once per statement.
+        // Without it those rows look like duplicated data, which is why it
+        // stays on screen even though the grid is now four columns wide.
+        childRows = mappings.map(m => {
+          const statement = [m.StatementReference, m.StatementTitle].filter(Boolean).join(" - ");
+          // Authority / Artifact / Release, in narrowing order, as one line.
+          const source = [
+            m.Authority,
+            [m.ArtifactCode, m.Artifact].filter(Boolean).join(" - "),
+            m.ReleaseLabel || m.Release
+          ].filter(Boolean).join("  /  ");
+          return `<tr class="tree-row obligation-mapping-row" data-obligation-id="${escapeHtml(id)}" data-tree-depth="1">
           <td><span class="tree-node" style="--tree-depth:1">
             <span class="tree-toggle-spacer"></span>
             <i class="fa-solid fa-link" aria-hidden="true"></i>
             <span class="tree-reference">${escapeHtml(m.Practice || [m.RequirementCode, m.RequirementName].filter(Boolean).join(" - "))}</span>
           </span></td>
-          <td>${escapeHtml(m.Authority || "")}</td>
-          <td>${escapeHtml([m.ArtifactCode, m.Artifact].filter(Boolean).join(" - "))}</td>
-          <td>${escapeHtml(m.ReleaseLabel || m.Release || "")}</td>
-          <td></td>
-          <td></td>
+          <td colspan="2">
+            <span class="obligation-child-source" title="${escapeHtml(source)}">${escapeHtml(source)}</span>
+            ${statement
+              ? `<span class="tree-title" title="${escapeHtml(statement)}">${escapeHtml(statement)}</span>`
+              : `<span class="muted">No source statement</span>`}
+          </td>
           <td>${badge(m.Status || "Active")}</td>
           <td></td>
-        </tr>`).join("");
+        </tr>`;
+        }).join("");
       }
-      return parent + childRows;
+      return parent + childHeader + childRows;
     }).join("");
   }
   function parseObligationMappings(obligation) {
@@ -2391,8 +2891,8 @@
     const obligations = state.records || [];
     const colCount = cmScreen.Columns.length + 1;
     if (!obligations.length) return `<tr><td colspan="${colCount}" class="empty">No Obligations found.</td></tr>`;
-    const sorted = [...obligations].sort((a, b) =>
-      String(obligationName(a)).localeCompare(String(obligationName(b))));
+    const sorted = pageRows([...obligations].sort((a, b) =>
+      String(obligationName(a)).localeCompare(String(obligationName(b)))));
     return sorted.map(ob => {
       const id = String(ob.Id || ob.ObligationId || "");
       const toggleKey = `obligation-mapping-${id}`;
@@ -2416,6 +2916,21 @@
         <td>${actionMenu(id)}</td>
       </tr>`;
       if (collapsed) return parent;
+      // Child rows reuse the parent's columns for entirely different values --
+      // Authority sits under "Execution Frequency", Artifact under "Assurance
+      // Frequency", Release under "Retention Period".  One grid header cannot
+      // describe both shapes, so the child block carries its own rather than
+      // leaving the reader to match values against labels that never applied to
+      // them.  Rendered only when there is at least one mapping to head.
+      const childHeader = mappings.length ? `<tr class="obligation-child-header-row">
+        <td><span class="tree-node" style="--tree-depth:1"><span class="tree-toggle-spacer"></span>Practice</span></td>
+        <td>Authority</td>
+        <td>Artifact</td>
+        <td>Release</td>
+        <td colspan="2"></td>
+        <td>Status</td>
+        <td></td>
+      </tr>` : "";
       let childRows;
       if (mappings.length === 0) {
         childRows = `<tr class="tree-row obligation-mapping-row" data-obligation-id="${escapeHtml(id)}" data-tree-depth="1">
@@ -2452,32 +2967,106 @@
           </tr>`;
         }).join("");
       }
-      return parent + childRows;
+      return parent + childHeader + childRows;
     }).join("");
   }
+  // ---------- Change Management: atomic approval bundles ----------
+  // A composite save (e.g. the merged Obligation Master form) emits ONE
+  // change_management row per sub-entity, all sharing a BundleId.  Those rows
+  // must be actioned together, so the checker queue collapses them into a
+  // single parent row: one card, one Approve / Reject / Send Back.
+  //
+  // The atomicity itself is enforced in SQL -- cm_manage_repository's
+  // change-management branch detects bundle_id and delegates to
+  // sp_cm_change_bundle_*.  This grouping is the matching UX so the checker
+  // is never presented with a partial-approval affordance in the first place.
+  function changeManagementGroups() {
+    const groups = [];
+    const byBundle = new Map();
+    (state.records || []).forEach(row => {
+      const bundleId = String(row.BundleId ?? row.bundleId ?? "").trim();
+      if (!bundleId) { groups.push({ key: `cr-${row.Id}`, parent: row, children: [], bundled: false }); return; }
+      if (!byBundle.has(bundleId)) {
+        const group = { key: `bundle-${bundleId}`, parent: row, children: [], bundled: true, bundleId };
+        byBundle.set(bundleId, group);
+        groups.push(group);
+      }
+      const group = byBundle.get(bundleId);
+      group.children.push(row);
+      // The master row (lowest BundleSeq) supplies the summary line.
+      const seq = Number(row.BundleSeq ?? row.bundleSeq ?? 0);
+      const parentSeq = Number(group.parent.BundleSeq ?? group.parent.bundleSeq ?? 0);
+      if (seq < parentSeq) group.parent = row;
+    });
+    groups.forEach(g => g.children.sort((a, b) =>
+      Number(a.BundleSeq ?? 0) - Number(b.BundleSeq ?? 0)));
+    return groups;
+  }
+
+  function renderChangeManagementRows() {
+    // Paged by bundle: a bundled change request and its members stay together.
+    const groups = pageRows(changeManagementGroups());
+    const colCount = cmScreen.Columns.length + 1;
+    if (!groups.length) return `<tr><td colspan="${colCount}" class="empty">No records found</td></tr>`;
+
+    return groups.map(group => {
+      const row = group.parent;
+      if (!group.bundled)
+        return `<tr>${cmScreen.Columns.map(c => `<td>${cellValue(row, c)}</td>`).join("")}<td>${actionMenu(row.Id)}</td></tr>`;
+
+      const collapsed = state.collapsed.has(group.key);
+      const count = group.children.length;
+      // Action menu is driven by the parent row's id; the SQL layer expands
+      // any bundle member to the whole bundle, so this is safe.
+      const parentRow = `<tr class="tree-row tree-parent-row cm-bundle-parent-row" data-bundle-id="${escapeHtml(group.bundleId)}" data-tree-depth="0">
+        ${cmScreen.Columns.map((column, index) => {
+          if (index !== 0) return `<td>${cellValue(row, column)}</td>`;
+          return `<td><span class="tree-node" style="--tree-depth:0">
+            <button type="button" class="tree-toggle" data-tree-toggle="${escapeHtml(group.key)}" aria-label="${collapsed ? "Expand" : "Collapse"} bundled change requests">
+              <i class="fa-solid fa-chevron-${collapsed ? "right" : "down"}"></i>
+            </button>
+            <span class="tree-reference">${cellValue(row, column)}</span>
+            <span class="cm-bundle-badge" title="These ${count} change requests were submitted together and are approved or rejected as one unit.">
+              <i class="fa-solid fa-layer-group" aria-hidden="true"></i> ${count} linked
+            </span>
+          </span></td>`;
+        }).join("")}
+        <td>${actionMenu(row.Id)}</td>
+      </tr>`;
+
+      if (collapsed) return parentRow;
+
+      const childRows = group.children.map(child => {
+        const label = String(child.EntityType ?? child.entityType ?? "").trim()
+          || String(child.RecordReference ?? "").trim()
+          || `Change ${child.Id}`;
+        return `<tr class="tree-row cm-bundle-child-row" data-tree-depth="1">
+          <td><span class="tree-node" style="--tree-depth:1">
+            <span class="tree-toggle-spacer"></span>
+            <i class="fa-solid fa-diagram-next" aria-hidden="true"></i>
+            <span class="tree-reference">${escapeHtml(label)}</span>
+          </span></td>
+          ${cmScreen.Columns.slice(1).map(column => `<td>${cellValue(child, column)}</td>`).join("")}
+          <td></td>
+        </tr>`;
+      }).join("");
+
+      return parentRow + childRows;
+    }).join("");
+  }
+
   function renderRows() {
+    // Client-paged screens recompute their own total while rendering; reset it
+    // first so the "no records" branches leave the pager showing zero.
+    if (!isServerPaged()) state.gridTotal = 0;
     if (cmScreen.Key === "source-structure") return renderSourceStructureRows();
     if (cmScreen.Key === "framework-statements") return renderFrameworkStatementRows();
     if (cmScreen.Key === "obligations") return renderObligationRows();
     if (cmScreen.Key === "obligation-mappings") return renderObligationMappingsRows();
+    if (cmScreen.Key === "change-management") return renderChangeManagementRows();
     if (cmScreen.Key === "audit-trace") return renderAuditRows();
-    if (!state.records.length) return `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">No records found</td></tr>`;
-    return state.records.map(row => `<tr${cmScreen.Key === "authorities" ? ` class="drill-down-row" data-authority-id="${row.Id}" title="View regulatory artifacts" tabindex="0" role="link" aria-label="View regulatory artifacts under ${escapeHtml(row.Name)}"` : cmScreen.Key === "artifacts" ? ` class="drill-down-row" data-artifact-id="${row.Id}" title="View releases" tabindex="0" role="link" aria-label="View releases under ${escapeHtml(row.Code)}"` : cmScreen.Key === "releases" ? ` class="drill-down-row" data-release-id="${row.Id}" title="View framework source structure" tabindex="0" role="link" aria-label="View framework source structure under ${escapeHtml(row.Version)}"` : ""}>${cmScreen.Columns.map(column => `<td>${cellValue(row, column)}</td>`).join("")}<td>${actionMenu(row.Id)}</td></tr>`).join("");
-  }
-  function updateAuditPager() {
-    if (!auditPager) return;
-    const total = auditGroups().length;
-    const totalPages = Math.max(1, Math.ceil(total / state.auditPageSize));
-    state.auditPage = Math.min(Math.max(1, state.auditPage), totalPages);
-    auditPager.hidden = total === 0;
-    if (auditPagerInfo) {
-      const start = total ? (state.auditPage - 1) * state.auditPageSize + 1 : 0;
-      const end = Math.min(total, state.auditPage * state.auditPageSize);
-      auditPagerInfo.textContent = `Showing ${start}-${end} of ${total} records`;
-    }
-    if (auditPageInfo) auditPageInfo.textContent = `Page ${state.auditPage} of ${totalPages}`;
-    if (auditPrev) auditPrev.disabled = state.auditPage <= 1;
-    if (auditNext) auditNext.disabled = state.auditPage >= totalPages;
+    if (!state.records.length) { if (!isServerPaged()) state.gridTotal = 0; return `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">No records found</td></tr>`; }
+    return pageRows(state.records).map(row => `<tr${cmScreen.Key === "authorities" ? ` class="drill-down-row" data-authority-id="${row.Id}" title="View regulatory artifacts" tabindex="0" role="link" aria-label="View regulatory artifacts under ${escapeHtml(row.Name)}"` : cmScreen.Key === "artifacts" ? ` class="drill-down-row" data-artifact-id="${row.Id}" title="View releases" tabindex="0" role="link" aria-label="View releases under ${escapeHtml(row.Code)}"` : cmScreen.Key === "releases" ? ` class="drill-down-row" data-release-id="${row.Id}" title="View framework source structure" tabindex="0" role="link" aria-label="View framework source structure under ${escapeHtml(row.Version)}"` : ""}>${cmScreen.Columns.map(column => `<td>${cellValue(row, column)}</td>`).join("")}<td>${actionMenu(row.Id)}</td></tr>`).join("");
   }
   function auditGroups() {
     const groups = new Map();
@@ -2491,11 +3080,10 @@
     return [...groups.values()];
   }
   function renderAuditRows() {
-    updateAuditPager();
-    const groups = auditGroups();
-    if (!groups.length) return `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">No records found</td></tr>`;
-    const start = (state.auditPage - 1) * state.auditPageSize;
-    const pageGroups = groups.slice(start, start + state.auditPageSize);
+    // Paged by audit event: the parent row and its field-level detail rows
+    // always render on the same page.
+    const pageGroups = pageRows(auditGroups());
+    if (!pageGroups.length) return `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">No records found</td></tr>`;
     return pageGroups.map(group => {
       const row = group.parent;
       const key = `audit:${group.key}`;
@@ -2717,7 +3305,6 @@
   async function load() {
     closeMenus();
     const loadVersion = ++state.loadVersion;
-    if (cmScreen.Key === "audit-trace") state.auditPage = 1;
     rows.innerHTML = `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">Loading...</td></tr>`;
     const search = encodeURIComponent(document.querySelector("#search").value), status = encodeURIComponent(document.querySelector("#status").value), authorityId = encodeURIComponent(authoritySelect.value), artifactId = encodeURIComponent(artifactSelect.value), releaseId = encodeURIComponent(releaseSelect.value), code = encodeURIComponent(state.navigationCode);
     const changeModule = encodeURIComponent(changeModuleSelect?.value || "");
@@ -2725,7 +3312,10 @@
     try {
       if (statementScopedAreas.has(cmScreen.Key)) {
         const [nodes, statements, obligations] = await Promise.all([
-          fetchRows("source-structure", { authorityId: authoritySelect.value, artifactId: artifactSelect.value, releaseId: releaseSelect.value, status: "Active" }),
+          // All statuses, not just Active: a deactivated node still has to appear
+          // here, otherwise every statement under it silently vanishes from the
+          // grid and there is no way to reach it to activate it again.
+          fetchRows("source-structure", { authorityId: authoritySelect.value, artifactId: artifactSelect.value, releaseId: releaseSelect.value, status: "" }),
           fetchRows("framework-statements", { search: cmScreen.Key === "framework-statements" ? document.querySelector("#search").value : "", authorityId: authoritySelect.value, artifactId: artifactSelect.value, releaseId: releaseSelect.value, status: "" }),
           cmScreen.Key === "obligations"
             ? fetchRows("obligations", { search: document.querySelector("#search").value, authorityId: authoritySelect.value, artifactId: artifactSelect.value, releaseId: releaseSelect.value, status: "" })
@@ -2736,6 +3326,7 @@
         state.frameworkStatementStatements = statements;
         state.records = cmScreen.Key === "obligations" ? obligations : statements;
         rows.innerHTML = renderRows();
+        updateGridPager();
         return;
       }
       const extra = ["change-management","audit-trace"].includes(cmScreen.Key) ? `&module=${changeModule}&actionType=${changeActionType}` : "";
@@ -2751,41 +3342,47 @@
       }
       if (["change-management","audit-trace"].includes(cmScreen.Key)) await populateChangeManagementFilters();
       rows.innerHTML = renderRows();
-      if (paged) updateGridPager();
+      updateGridPager();
     } catch (error) { if (loadVersion === state.loadVersion) rows.innerHTML = `<tr><td colspan="${cmScreen.Columns.length + 1}" class="empty">${escapeHtml(error.message)}</td></tr>`; }
   }
+  /* Called after every render.  `state.gridTotal` is set by the API for
+     server-paged screens and by pageRows()/pageTreeRoots() for the rest. */
   function updateGridPager() {
     if (!gridPager) return;
-    if (!paginatedAreas.has(cmScreen.Key)) { gridPager.hidden = true; return; }
-    const total = Number(state.gridTotal) || 0;
-    const size = Math.max(1, Number(state.gridPageSize) || 25);
-    const totalPages = Math.max(1, Math.ceil(total / size));
-    state.gridPage = Math.min(Math.max(1, state.gridPage), totalPages);
-    gridPager.hidden = false;
-    if (gridPagerInfo) {
-      const start = total ? (state.gridPage - 1) * size + 1 : 0;
-      const end = Math.min(total, state.gridPage * size);
-      gridPagerInfo.textContent = `Showing ${start}-${end} of ${total} records`;
-    }
-    if (gridPageInfo) gridPageInfo.textContent = `Page ${state.gridPage} of ${totalPages}`;
-    if (gridFirst) gridFirst.disabled = state.gridPage <= 1;
-    if (gridPrev) gridPrev.disabled = state.gridPage <= 1;
-    if (gridNext) gridNext.disabled = state.gridPage >= totalPages;
-    if (gridLast) gridLast.disabled = state.gridPage >= totalPages;
+    state.gridPage = gridPager.update({
+      page: state.gridPage,
+      pageSize: state.gridPageSize,
+      total: Number(state.gridTotal) || 0
+    });
   }
-  function resetGridPage() { state.gridPage = 1; }
-  function gridLastPage() {
-    const size = Math.max(1, Number(state.gridPageSize) || 25);
-    return Math.max(1, Math.ceil((Number(state.gridTotal) || 0) / size));
+  function resetGridPage() { state.gridPage = 1; gridPager?.setPage(1); }
+  /* The Status filter and the Status field on the form must offer the same
+     vocabulary, so both read the screen's schema.  A few screens have no Status
+     field of their own — they get an explicit group here rather than inheriting
+     a vocabulary their rows never use. */
+  const statusLookupOverrides = {
+    "change-management": "status-change-request"
+  };
+  // Screens where filtering by status is meaningless: the immutable log views.
+  const statusFilterHiddenAreas = new Set(["audit-trace", "assurance-version-history"]);
+  function statusLookupKey() {
+    if (statusLookupOverrides[cmScreen.Key]) return statusLookupOverrides[cmScreen.Key];
+    const field = (schemas[cmScreen.Key] || []).find(item => item.name === "status");
+    return field?.lookup || "status-repository";
   }
   function populateStatusFilter() {
     const statusSelect = document.querySelector("#status");
-    if (statementScopedAreas.has(cmScreen.Key)) {
+    if (statementScopedAreas.has(cmScreen.Key) || statusFilterHiddenAreas.has(cmScreen.Key)) {
       statusSelect.hidden = true;
       statusSelect.innerHTML = `<option value="">All statuses</option>`;
       return;
     }
-    const values = [...new Map(Object.entries(state.lookups).filter(([key]) => key.includes("status")).flatMap(([,items]) => items).map(item => [item.value,item])).values()];
+    // Use the lookup group this screen's own Status field is bound to.  The
+    // previous version merged every group whose key contained "status", so a
+    // grid offered values its table never holds (Draft and Archived on a
+    // Practice, Inactive on an Artifact, and so on).
+    const values = state.lookups[statusLookupKey()] || [];
+    statusSelect.hidden = false;
     statusSelect.innerHTML = `<option value="">All statuses</option>${values.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("")}`;
   }
   async function populateChangeManagementFilters() {
@@ -2879,28 +3476,8 @@
   document.querySelector("#refresh").addEventListener("click", load);
   document.querySelector("#search").addEventListener("input", reloadFromFilter);
   document.querySelector("#status").addEventListener("change", reloadFromFilter);
-  auditPageSize?.addEventListener("change", () => {
-    state.auditPageSize = Number(auditPageSize.value || 25);
-    state.auditPage = 1;
-    rows.innerHTML = renderRows();
-  });
-  auditPrev?.addEventListener("click", () => {
-    state.auditPage = Math.max(1, state.auditPage - 1);
-    rows.innerHTML = renderRows();
-  });
-  auditNext?.addEventListener("click", () => {
-    state.auditPage += 1;
-    rows.innerHTML = renderRows();
-  });
-  gridPageSize?.addEventListener("change", () => {
-    state.gridPageSize = Number(gridPageSize.value || 25);
-    state.gridPage = 1;
-    load();
-  });
-  gridFirst?.addEventListener("click", () => { if (state.gridPage > 1) { state.gridPage = 1; load(); } });
-  gridPrev?.addEventListener("click", () => { if (state.gridPage > 1) { state.gridPage -= 1; load(); } });
-  gridNext?.addEventListener("click", () => { if (state.gridPage < gridLastPage()) { state.gridPage += 1; load(); } });
-  gridLast?.addEventListener("click", () => { const last = gridLastPage(); if (state.gridPage < last) { state.gridPage = last; load(); } });
+  // Page navigation and rows-per-page are handled by the GracPager instance
+  // created above (see its onChange handler).
   changeModuleSelect?.addEventListener("change", reloadFromFilter);
   changeActionTypeSelect?.addEventListener("change", reloadFromFilter);
   document.querySelector("#clearFilters")?.addEventListener("click", () => {
@@ -2968,7 +3545,18 @@
   form.addEventListener("submit", event => event.preventDefault());
   dialog.addEventListener("close", resetFormState);
   closeButton.addEventListener("click", closeForm);
-  cancelButton.addEventListener("click", closeForm);
+  // Cancel discards the in-progress edits and drops back to View Mode when the
+  // edit was started from there; otherwise it closes the dialog as before.
+  cancelButton.addEventListener("click", () => {
+    if (state.formReturnToView && state.mode !== "view") {
+      switchDialogMode("view").catch(error => alert(error.message));
+      return;
+    }
+    closeForm();
+  });
+  editButton?.addEventListener("click", () => {
+    switchDialogMode("edit").catch(error => alert(error.message));
+  });
   saveButton.addEventListener("click", save);
   fieldsHost.addEventListener("click", event => {
     const similarSort = event.target.closest("[data-similar-sort]");
@@ -3125,6 +3713,17 @@
     if (cmScreen.Key === "controls" && event.target?.id === "field-domainId") {
       refreshSubDomainOptions().catch(error => { message.textContent = error.message; message.hidden = false; });
     }
+    // Picking a Release on Add Source Node re-points the Authority / Artifact /
+    // Release banner at the top of the form.
+    if (formEntityKey() === "source-structure" && event.target?.id === "field-releaseId") {
+      state.formContext.releaseId = event.target.value;
+      state.formContext.releaseLabel = "";
+      state.formContext.artifactLabel = "";
+      state.formContext.authorityLabel = "";
+      state.formContext.parentArtifactId = "";
+      state.formContext.parentAuthorityId = "";
+      renderSourceNodeContext();
+    }
     if (formEntityKey() === "framework-statements" && event.target?.id === "field-releaseId") {
       frameworkStatementTreeState.selected = "";
       frameworkStatementTreeState.collapsed.clear();
@@ -3173,10 +3772,11 @@
     const button = event.target.closest("[data-action]");
     if (!button) {
       const toggle = event.target.closest("[data-tree-toggle]");
-      if (toggle && (cmScreen.Key === "source-structure" || cmScreen.Key === "framework-statements" || cmScreen.Key === "obligations" || cmScreen.Key === "obligation-mappings" || cmScreen.Key === "audit-trace")) {
+      if (toggle && (cmScreen.Key === "source-structure" || cmScreen.Key === "framework-statements" || cmScreen.Key === "obligations" || cmScreen.Key === "obligation-mappings" || cmScreen.Key === "change-management" || cmScreen.Key === "audit-trace")) {
         const id = toggle.dataset.treeToggle;
         state.collapsed.has(id) ? state.collapsed.delete(id) : state.collapsed.add(id);
         rows.innerHTML = renderRows();
+        updateGridPager();
         return;
       }
       const authorityRow = event.target.closest("[data-authority-id]");

@@ -1,0 +1,305 @@
+@{
+    var mode = (ViewBag.Mode as string ?? "add").ToLowerInvariant();
+    var readonlyMode = mode == "view";
+    ViewData["Title"] = readonlyMode ? "View Obligation"
+                                     : mode == "edit" ? "Edit Obligation"
+                                                      : "Add Obligation";
+    var permissions = ViewBag.Permissions as string[] ?? [];
+}
+<link rel="stylesheet" href="~/css/repository-actions.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/obligation-mapping-form.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/obligation-master-form.css" asp-append-version="true" />
+
+<div class="page-heading om-page-heading">
+    <div>
+        <p class="eyebrow">Repository Management / Obligation Master</p>
+        <h1 id="omfPageTitle">@ViewData["Title"]</h1>
+        @* The former intro paragraph was removed: it explained the form's
+           purpose once, then cost vertical space on every visit.  Each section
+           carries its own one-line description instead. *@
+    </div>
+</div>
+
+<div id="omfMessage" class="form-message" hidden></div>
+
+<form id="obligationMasterForm" class="om-form-page">
+
+    @* ---------------- 1. Obligation + Type ----------------
+       Master fields and the taxonomy type share one card: the type IS part of
+       what the obligation is, so splitting them across two cards cost a whole
+       card header of vertical space for no conceptual gain.  A 12-column grid
+       lets short controls sit three-to-a-row instead of two, which removes
+       roughly half the scroll depth of the original stacked layout. *@
+    <section class="om-card om-card-compact">
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2>Obligation</h2>
+                <p>Identity, scheduling and classification.</p>
+            </div>
+        </div>
+
+        <div class="omf-grid">
+            <div class="form-field omf-span-6">
+                <span class="form-field-label">Obligation Name <span class="required">*</span></span>
+                <input type="text" id="omf-name" name="obligationName" maxlength="500"
+                       @(readonlyMode ? "disabled" : "") required />
+            </div>
+            <div class="form-field omf-span-3">
+                <span class="form-field-label">Obligation Type <span class="required">*</span></span>
+                <select id="omf-type" name="obligationTypeCode" @(readonlyMode ? "disabled" : "") required>
+                    <option value="">-- Select Type --</option>
+                </select>
+                @* Populated from obligation_type_master.description on change,
+                   so the meaning of the selected type is visible inline
+                   instead of costing a card-header paragraph. *@
+                <span class="form-field-hint" id="omf-type-description"></span>
+            </div>
+            <div class="form-field omf-span-3">
+                <span class="form-field-label">Status <span class="required">*</span></span>
+                <select id="omf-status" name="status" @(readonlyMode ? "disabled" : "") required></select>
+            </div>
+
+            @* Execution Frequency is NOT a common field.  It only means anything
+               for an Execution obligation, where it is captured on the Execution
+               typed-detail panel (TYPE_SCHEMA.Execution in
+               obligation-master-form.js).  Asking for it on every obligation
+               produced a value that most types silently ignored, so the master
+               control was removed.  The hidden input keeps the saved value
+               intact on edit -- the payload still carries executionFrequencyId,
+               it is just sourced from the typed panel now. *@
+            <input type="hidden" id="omf-execution-frequency" name="executionFrequencyId" value="" />
+
+            @* Retention Period is not a master field either.  Retention is stated
+               per evidence specification in the Evidence Details grid below, so
+               asking for it once more up here produced two answers to the same
+               question with nothing deciding which one won.  Same treatment as
+               Execution Frequency above: the hidden input keeps whatever was
+               already stored intact on edit, so the payload still carries
+               retentionRequirement -- it is simply no longer re-asked. *@
+            <input type="hidden" id="omf-retention" name="retentionRequirement" value="" />
+
+            @* Widened to the full row: Retention Period used to take the other
+               half of this line, and leaving Keywords at half width would strand
+               six empty grid columns beside it. *@
+            <div class="form-field omf-span-12" data-field-name="keywords">
+                <span class="form-field-label">Keywords</span>
+                <div class="tag-input-wrap" id="field-keywords" data-tag-input>
+                    <input type="text" id="omf-keywords" name="keywords"
+                           placeholder="access review, KYC, vendor due diligence"
+                           @(readonlyMode ? "disabled" : "") />
+                </div>
+                <span class="form-field-hint">Comma separated.</span>
+            </div>
+
+            @* Duplicate-detection grid.  Populated as the user types keywords;
+               hidden until the first keyword is entered so it costs zero height
+               on a clean form.  Warn-only -- it never blocks Save.  Markup is
+               injected by obligation-master-form.js and reuses the shared
+               .similar-* styles from repository-actions.css. *@
+            <div id="similarObligations" class="similar-controls similar-inline omf-span-12" hidden></div>
+
+            @* Obligation Description, replacing the Remarks box that used to
+               sit here.  It is bound to requirement_obligation.obligation_text
+               -- the column that always existed for it but that nothing could
+               reach: before migration 055 cm_manage_repository overwrote
+               obligation_text with a copy of obligation_name on every save, so
+               a description could be stored but never edited and never
+               survived a Save from this screen.
+
+               Remarks did not move to another field: the screen no longer
+               collects it at all.  It is a back-end column now, written by the
+               bulk loads, and 055 COALESCEs it on UPDATE so a save from here
+               cannot blank it.
+
+               Three rows rather than two -- descriptions run to a few
+               sentences where remarks were usually a phrase. *@
+            <div class="form-field omf-span-12">
+                <span class="form-field-label">Obligation Description</span>
+                <textarea id="omf-description" name="obligationText" rows="3"
+                          @(readonlyMode ? "disabled" : "")></textarea>
+                <span class="form-field-hint">What the obligation requires, in full.</span>
+            </div>
+        </div>
+
+        @* Type-dependent region.
+           Everything above is static -- present for every obligation.  Everything
+           inside this inset panel is driven by the Obligation Type selected
+           above and is replaced wholesale when the type changes.  Giving it its
+           own tinted surface makes that boundary legible: the user can see at a
+           glance which fields belong to the type, and the discard-on-type-change
+           confirmation refers to a region they can actually point at.
+           An inset panel rather than a nested card -- a second card header would
+           add back the vertical chrome the layout pass just removed. *@
+        <div class="omf-typed-panel" id="omf-typed-detail-wrap" hidden>
+            <div class="omf-typed-panel-head">
+                <div class="omf-typed-panel-titles">
+                    <h3 id="omf-typed-heading">Typed Detail</h3>
+                    <p id="omf-typed-subheading"></p>
+                </div>
+                <span class="omf-type-chip" id="omf-type-chip" hidden></span>
+            </div>
+            <div class="omf-grid" id="omf-typed-fields"></div>
+        </div>
+
+        @* Same slot, same framing -- the Evidence type simply has no fields. *@
+        <div class="omf-typed-panel omf-typed-panel-empty" id="omf-evidence-type-note" hidden>
+            <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+            <span>
+                Standalone <strong>Evidence</strong> obligations have no typed detail &mdash;
+                describe the proof in Evidence Details below.
+            </span>
+        </div>
+    </section>
+
+    <!-- ---------------- 3. Evidence details (master-owned) ---------------- -->
+    <section class="om-card om-card-matrix">
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2>Evidence Details</h2>
+                <p>
+                    Evidence specifications owned by this obligation. One row per Evidence Type.
+                </p>
+            </div>
+            @if (!readonlyMode)
+            {
+                <button type="button" class="button" id="omfAddEvidence">
+                    <i class="fa-solid fa-plus"></i> Add Evidence
+                </button>
+            }
+        </div>
+        <div class="om-table-wrap">
+            <table class="om-table omf-evidence-table">
+                @* Assurance Frequency was removed from this grid.  Assurance
+                   cadence belongs to the obligation type: an Assurance obligation
+                   states it on its typed-detail panel, and asking again per
+                   evidence row gave the same fact two owners.  The stored
+                   frequency_id on existing evidence rows is left untouched and
+                   still round-trips through the payload. *@
+                <colgroup>
+                    <col class="omf-col-evtype">
+                    <col class="omf-col-evret">
+                    <col class="omf-col-evremarks">
+                    <col class="omf-col-evactions">
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Evidence Type</th>
+                        <th>Retention Period</th>
+                        <th>Remarks</th>
+                        <th aria-label="Actions"></th>
+                    </tr>
+                </thead>
+                <tbody id="omf-evidence-body">
+                    <tr><td colspan="4" class="empty">No evidence rows yet.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    @* ---------------- 4. Source Statement Mapping ----------------
+       The same Release -> Source Structure -> Framework Statement tree the
+       Practice form carries, pointed at the obligation instead of the
+       practice.  Deliberately identical markup and CSS classes
+       (.requirement-control-map / .req-tree-*, defined in
+       repository-actions.css which this page already links) so a maker who
+       has mapped statements to a Practice does not have to learn a second
+       control that does the same job.
+
+       This is what narrows the obligation picker on Practices - Obligation
+       Mapping.  A matrix row for Release R offers the obligations declared
+       against a statement of Release R -- plus every obligation that has
+       mapped no statements at all, which is why leaving this section empty
+       keeps the old, unfiltered behaviour. *@
+    <section class="om-card om-card-matrix">
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2>Source Statement Mapping</h2>
+                <p>
+                    The framework statements this obligation is written against.
+                    Used to filter the obligation list on Practices &ndash; Obligation Mapping.
+                </p>
+            </div>
+        </div>
+        <div class="requirement-control-map omf-statement-map">
+            <div class="requirement-control-head">
+                <div>
+                    <strong>Framework Statements</strong>
+                    <small id="omfStatementCount">0 selected</small>
+                </div>
+                @* Not disabled in view mode: searching a read-only tree changes
+                   nothing that could be saved, and a reviewer needs to find a
+                   statement in a long list as much as a maker does. *@
+                <input type="search" id="omfStatementSearch"
+                       placeholder="Search source structure or framework statements..." />
+            </div>
+            <div class="control-source-note">
+                Release &rarr; Source Structure &rarr; Framework Statements. Source Structure nodes
+                act as folders; select Framework Statements to map them to this Obligation.
+                Leave this empty to keep the obligation available on every release.
+            </div>
+            <div id="omfStatementTree" class="requirement-control-tree"></div>
+        </div>
+    </section>
+
+    @* A "Linked Evidence Specs" section (M:M reuse of evidence specs across
+       obligations) was prototyped here and deliberately removed before release.
+
+       The data layer for it exists and is untouched -- the six per-type link
+       tables from migration 026, sp_cm_obligation_evidence_link_attach/_detach,
+       and the 'obligation-evidence-links' entity type all remain.  What is
+       missing is the WORKFLOW:
+
+         * no screen authors a standalone reusable spec, even though
+           requirement_obligation_evidence.obligation_id was made nullable in
+           026 precisely to allow them, so every "linkable" spec is really
+           owned by some other obligation;
+         * standalone Evidence-type obligations cannot use link tables at all
+           (sp_..._link_attach throws 52874 for them);
+         * two evidence sections on one form read as near-duplicates.
+
+       Evidence Details above covers the normal case.  Reuse should return as
+       its own piece of work: an Evidence Spec library screen plus a picker
+       that offers only genuinely shared specs. *@
+</form>
+
+<!-- Type-change confirmation -->
+<div class="omf-confirm" id="omfConfirm" hidden>
+    <div class="omf-confirm-overlay" data-confirm-dismiss></div>
+    <div class="omf-confirm-card" role="dialog" aria-modal="true" aria-labelledby="omfConfirmTitle">
+        <h2 id="omfConfirmTitle">Change Obligation Type?</h2>
+        <p id="omfConfirmBody"></p>
+        <div class="omf-confirm-actions">
+            <button type="button" class="button" data-confirm-dismiss>Cancel</button>
+            <button type="button" class="button primary" id="omfConfirmAccept">
+                Change Type &amp; Discard Detail
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="om-action-bar">
+    <div class="om-action-bar-inner">
+        <button type="button" class="button" id="omfCancel">
+            <i class="fa-solid fa-arrow-left"></i> Cancel / Back
+        </button>
+        @if (!readonlyMode && (permissions.Contains("ADD") || permissions.Contains("EDIT")))
+        {
+            <button type="button" class="button primary" id="omfSave">
+                <i class="fa-solid fa-save"></i> Save Obligation
+            </button>
+        }
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        window.cmObligationMasterForm = {
+            api: "@ViewBag.ApiBaseUrl",
+            mode: "@mode",
+            obligationId: @((int)ViewBag.ObligationId),
+            returnUrl: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewBag.ReturnUrl as string ?? "")),
+            permissions: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(permissions))
+        };
+    </script>
+    <script src="~/js/obligation-master-form.js" asp-append-version="true"></script>
+}

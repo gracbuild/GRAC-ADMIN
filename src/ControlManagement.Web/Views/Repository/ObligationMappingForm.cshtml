@@ -32,7 +32,19 @@
         <div class="om-card-heading om-card-heading-tight">
             <div>
                 <h2>Mapped Statement Releases</h2>
-                <p>Select the Obligation that applies on each Statement / Release row.</p>
+                <p>
+                    Select one or more Obligations that apply on each Statement / Release row.
+                    Multiple obligations may be attached to the same cell.
+                </p>
+                @* Says out loud what the picker is doing, so a maker who cannot
+                   find an obligation knows where to go and fix it rather than
+                   assuming the record is missing.  The rule itself lives in
+                   isObligationEligible() in obligation-mapping-form.js. *@
+                <p class="om-card-note">
+                    Each row lists the obligations mapped to a source statement of that
+                    <strong>release</strong>, on the Obligation Master screen. Obligations with
+                    no source statement mapped are shown on every row.
+                </p>
             </div>
         </div>
         <div class="om-table-wrap">
@@ -52,7 +64,7 @@
                         <th>Release / Version</th>
                         <th>Statement Reference</th>
                         <th>Statement Title</th>
-                        <th>Mapped Obligation</th>
+                        <th>Mapped Obligations</th>
                     </tr>
                 </thead>
                 <tbody id="om-matrix-body">

@@ -1,0 +1,327 @@
+/* ============================================================================
+   GRAC Grid — project-wide standard for data grids.
+
+   Pattern:  fixed-height grid body  +  controlled row count  +  bottom pager.
+
+   Every grid in the product uses the same shell so the page never grows or
+   shrinks with the record count: the body is sized to exactly
+   `--grac-grid-rows` rows, anything beyond that is reached through the pager
+   docked at the bottom of the grid card.
+
+   Usage
+   -----
+     <div class="grac-grid">
+       <div class="table-wrap grac-grid-body">
+         <table>...</table>
+       </div>
+       <div class="grac-pager" id="gridPager"></div>
+     </div>
+
+   Row count / density can be overridden per screen:
+     <div class="grac-grid" style="--grac-grid-rows:12">          (row count)
+     <div class="grac-grid grac-grid--compact">                   (tree grids)
+   ============================================================================ */
+
+:root {
+  --grac-grid-rows: 10;           /* rows visible inside the fixed body      */
+  --grac-grid-row-h: 41px;        /* measured height of one standard row     */
+  --grac-grid-head-h: 39px;       /* sticky header row                       */
+  --grac-grid-radius: 10px;
+  --grac-grid-pager-h: 52px;
+}
+
+/* ---------------------------------------------------------------- shell -- */
+
+.grac-grid {
+  background: #fff;
+  border: 1px solid var(--grac-line, #e2e7f0);
+  border-radius: var(--grac-grid-radius);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Fixed height. The body never grows past `--grac-grid-rows` rows, so the
+   grid occupies the same vertical space on every screen and at every
+   viewport size. Overflow inside the body only kicks in when an individual
+   row wraps to more than one line. */
+/* Selectors are doubled up (`.grac-grid .grac-grid-body`) so they win over the
+   per-screen table styles in repository-actions.css / control-management.css
+   without those files needing to know about the grid shell. */
+.grac-grid .grac-grid-body {
+  border: 0;
+  border-radius: 0;
+  flex: 0 0 auto;
+  height: calc(var(--grac-grid-head-h) + (var(--grac-grid-rows) * var(--grac-grid-row-h)));
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+/* Header stays put while the body scrolls. */
+.grac-grid .grac-grid-body thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--grac-soft, #f7f9fc);
+  box-shadow: inset 0 -1px 0 #e5e9f0;
+}
+
+.grac-grid .grac-grid-body table {
+  width: 100%;
+}
+
+/* The last row of a full page should not double its border with the pager
+   divider directly beneath it. */
+.grac-grid .grac-grid-body tbody tr:last-child td {
+  border-bottom-color: transparent;
+}
+
+/* Tree / hierarchical grids run tighter rows and use spaced borders, so the
+   row height they need is measured separately. */
+.grac-grid--compact {
+  --grac-grid-row-h: 36px;
+  --grac-grid-head-h: 30px;
+}
+
+.grac-grid--compact .grac-grid-body {
+  padding-top: 0;
+}
+
+/* tree-grid-wrap paints its header transparent; the sticky header needs an
+   opaque fill or rows scroll through it. */
+.grac-grid--compact .grac-grid-body thead th {
+  background: #f6f8fb;
+  box-shadow: none;
+}
+
+/* Slim scrollbar so the fixed body reads as a single clean surface. */
+.grac-grid-body::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.grac-grid-body::-webkit-scrollbar-thumb {
+  background: #d8e0ec;
+  border: 3px solid #fff;
+  border-radius: 8px;
+}
+
+.grac-grid-body::-webkit-scrollbar-thumb:hover {
+  background: #c2cede;
+}
+
+.grac-grid-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------------------------------------------------------------- pager -- */
+
+.grac-pager {
+  align-items: center;
+  background: linear-gradient(180deg, #fcfdff 0%, #f7f9fc 100%);
+  border-top: 1px solid var(--grac-line, #e2e7f0);
+  color: #53627a;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  font-weight: 650;
+  gap: 12px;
+  justify-content: space-between;
+  min-height: var(--grac-grid-pager-h);
+  padding: 9px 12px;
+}
+
+.grac-pager[hidden] {
+  display: none;
+}
+
+/* -- left: record range ---------------------------------------------------- */
+
+.grac-pager__info {
+  color: #6a778d;
+  font-weight: 650;
+  letter-spacing: .01em;
+  white-space: nowrap;
+}
+
+.grac-pager__info b {
+  color: #172033;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+/* -- centre: navigation ---------------------------------------------------- */
+
+.grac-pager__nav {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+.grac-pager__pages {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  margin: 0 4px;
+}
+
+.grac-pager__btn {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #dfe6f0;
+  border-radius: 8px;
+  color: #45536c;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  gap: 6px;
+  height: 32px;
+  justify-content: center;
+  line-height: 1;
+  min-width: 32px;
+  padding: 0 9px;
+  transition: background-color .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease;
+  user-select: none;
+}
+
+.grac-pager__btn i {
+  font-size: 11px;
+}
+
+.grac-pager__btn:hover:not(:disabled) {
+  background: #eef4ff;
+  border-color: #b9ccf0;
+  color: var(--grac-blue, #2465ca);
+}
+
+.grac-pager__btn:focus-visible {
+  box-shadow: 0 0 0 3px rgba(70, 124, 235, .2);
+  outline: none;
+}
+
+/* First / last page: the edge buttons switch off rather than disappear so the
+   control never shifts position between pages. */
+.grac-pager__btn:disabled {
+  background: #f4f6fa;
+  border-color: #e6ebf3;
+  color: #b3bcca;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* Numbered pages */
+.grac-pager__page {
+  font-variant-numeric: tabular-nums;
+  padding: 0 6px;
+}
+
+.grac-pager__page.is-active {
+  background: var(--grac-blue, #2465ca);
+  border-color: var(--grac-blue, #2465ca);
+  box-shadow: 0 1px 3px rgba(36, 101, 202, .3);
+  color: #fff;
+}
+
+.grac-pager__page.is-active:hover {
+  background: var(--grac-blue, #2465ca);
+  border-color: var(--grac-blue, #2465ca);
+  color: #fff;
+}
+
+.grac-pager__gap {
+  color: #aab4c4;
+  font-weight: 800;
+  letter-spacing: .06em;
+  min-width: 20px;
+  text-align: center;
+  user-select: none;
+}
+
+/* -- right: page size ------------------------------------------------------ */
+
+.grac-pager__size {
+  align-items: center;
+  color: #6a778d;
+  display: inline-flex;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.grac-pager__size select {
+  background: #fff;
+  border: 1px solid #dfe6f0;
+  border-radius: 8px;
+  color: #172033;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  height: 32px;
+  min-width: 68px;
+  padding: 0 8px;
+}
+
+.grac-pager__size select:focus-visible {
+  border-color: #b9ccf0;
+  box-shadow: 0 0 0 3px rgba(70, 124, 235, .2);
+  outline: none;
+}
+
+/* ---------------------------------------------------------- responsive --- */
+
+/* Tablet: drop the numeric page buttons to their compact form and let the
+   pager wrap onto two lines rather than squeezing the controls. */
+@media (max-width: 1100px) {
+  .grac-pager {
+    justify-content: center;
+  }
+
+  .grac-pager__info {
+    order: 3;
+    width: 100%;
+    text-align: center;
+  }
+
+  .grac-pager__nav {
+    order: 1;
+  }
+
+  .grac-pager__size {
+    order: 2;
+  }
+}
+
+@media (max-width: 760px) {
+  :root {
+    --grac-grid-rows: 8;
+  }
+
+  .grac-pager {
+    gap: 8px;
+    padding: 8px;
+  }
+
+  /* Keep first/prev/current/next/last — hide the wider number strip. */
+  .grac-pager__pages .grac-pager__page:not(.is-active),
+  .grac-pager__gap {
+    display: none;
+  }
+
+  .grac-pager__btn .grac-pager__btn-label {
+    display: none;
+  }
+
+  .grac-pager__btn {
+    padding: 0 8px;
+  }
+}
+
+@media (max-width: 480px) {
+  .grac-pager__size {
+    display: none;
+  }
+}

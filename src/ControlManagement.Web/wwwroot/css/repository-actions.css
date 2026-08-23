@@ -678,6 +678,92 @@ mark.similar-highlight {
   flex: 0 0 auto;
 }
 
+/* A deactivated branch of a tree grid reads back a step so a live subtree is
+   never mistaken for a retired one. */
+.tree-row-inactive td {
+  background: #fafbfd;
+}
+
+.tree-row-inactive .tree-reference,
+.tree-row-inactive .tree-title {
+  color: #8a94a6;
+}
+
+/* ---------------------------------------------------- view / edit mode ---
+   The record dialog is one surface with two modes.  The chip states which
+   mode is active; the fields cross-fade briefly when the mode changes so the
+   switch reads as the same dialog changing state. */
+
+/* Top-right cluster of the record dialog: Edit sits to the left of Close so it
+   is reachable without scrolling past a long form. */
+.dialog-heading-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.dialog-heading-actions #editRecord {
+  height: 34px;
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
+.dialog-heading-actions #editRecord[hidden] {
+  display: none;
+}
+
+.dialog-mode-chip {
+  background: #eef2f9;
+  border-radius: 12px;
+  color: #53627a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  margin-left: 8px;
+  padding: 3px 10px;
+  text-transform: none;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.dialog-mode-chip[hidden] {
+  display: none;
+}
+
+.dialog-mode-chip.is-edit {
+  background: #e7f0ff;
+  color: var(--grac-blue, #2465ca);
+}
+
+#recordFields.mode-switching {
+  animation: grac-mode-switch 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes grac-mode-switch {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* View Mode reads as a read-only summary: disabled controls lose the "greyed
+   out / broken" look and sit flat on the surface. */
+#recordDialog.record-dialog-view-mode #recordFields input:disabled,
+#recordDialog.record-dialog-view-mode #recordFields select:disabled,
+#recordDialog.record-dialog-view-mode #recordFields textarea:disabled {
+  background: #f8fafc;
+  border-color: #e8edf5;
+  color: #25344e;
+  cursor: default;
+  opacity: 1;
+  -webkit-text-fill-color: #25344e;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #recordFields.mode-switching {
+    animation: none;
+  }
+}
+
 #recordDialog.compact-statement-dialog {
   width: min(1260px, calc(100vw - 312px));
   height: min(690px, calc(100vh - 48px));
@@ -770,6 +856,83 @@ mark.similar-highlight {
   margin-top: 8px;
   padding-top: 8px;
   position: static;
+}
+
+/* ---------------------------------------------------------------------
+   Add / Edit / View Practice -- full-screen layout.
+   The Practice form carries the Framework Statement mapping tree, so the
+   920px default dialog left it cramped.  This variant fills the viewport,
+   keeps the heading and the Save / Cancel bar pinned, and lets the fields
+   area scroll.  Applied by repository.js for the requirements screen only.
+   --------------------------------------------------------------------- */
+/* The Practice form is not a pop-up.  repository.js opens it with show()
+   (non-modal) so it drops out of the top layer and lays out as an ordinary
+   block inside .content — the sidebar menu and the top bar stay visible and
+   usable, exactly like the Dashboard. */
+#recordDialog.practice-dialog {
+  position: static;
+  inset: auto;
+  transform: none;
+  margin: 0;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  max-height: none;
+  border: 1px solid var(--grac-line);
+  border-radius: 8px;
+  box-shadow: 0 2px 7px rgba(37, 52, 90, 0.04);
+  overflow: visible;
+  z-index: auto;
+}
+
+/* The grid and its page heading step aside while the form is on screen, so the
+   form reads as a page of its own instead of stacking under the list. */
+body.practice-form-open .page-heading,
+body.practice-form-open section.panel {
+  display: none;
+}
+
+#recordDialog.practice-dialog form {
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  padding: 16px 18px;
+}
+
+#recordDialog.practice-dialog .dialog-heading {
+  flex: 0 0 auto;
+  margin-bottom: 10px;
+}
+
+/* The page scrolls, not the field area — nothing is clipped and the Save bar
+   always sits at the end of the form where the user expects it. */
+#recordDialog.practice-dialog #recordFields {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+  max-height: none;
+  align-content: start;
+  padding-right: 0;
+}
+
+#recordDialog.practice-dialog .requirement-control-tree {
+  max-height: 460px;
+  min-height: 260px;
+}
+
+#recordDialog.practice-dialog .dialog-actions {
+  flex: 0 0 auto;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--grac-line);
+  position: static;
+}
+
+/* Non-modal dialogs render no backdrop; this only guards the modal fallback. */
+#recordDialog.practice-dialog::backdrop {
+  background: transparent;
 }
 
 #recordDialog::backdrop {
@@ -998,6 +1161,100 @@ mark.similar-highlight {
 
 .obligation-parent-row .tree-reference {
   font-weight: 800;
+}
+
+/* ---------- Obligation tree: child source line ----------
+   Authority / Artifact / Release, stacked above the statement they address
+   rather than given a column each.  Quieter and smaller than the statement
+   below it: it is the context for that line, not a peer of it. */
+.obligation-child-source {
+  display: block;
+  margin-bottom: 1px;
+  color: #8a97ab;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The statement sits on its own line under the source, so it must not stay
+   inline-block-with-a-cap the way it is elsewhere in the tree. */
+.obligation-mapping-row .tree-title {
+  display: block;
+  max-width: none;
+}
+
+/* ---------- Obligation tree: child column header ----------
+   The mapping child rows carry different values in the same columns as their
+   parent (a Practice under "Obligation Name", and so on), so each expanded
+   obligation prints its own header strip above its children.  Styled as a
+   label strip rather than a row: no hover, no row borders, nothing clickable. */
+.obligation-child-header-row td {
+  padding: 4px 9px 3px;
+  background: #f2f6fc;
+  border-top: 1px solid #e6ecf5;
+  border-bottom: 1px solid #dbe4f0;
+  color: #667085;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .045em;
+  text-transform: uppercase;
+  line-height: 1.3;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.obligation-child-header-row td:first-child { border-left: 1px solid #e6ecf5; }
+.obligation-child-header-row td:last-child  { border-right: 1px solid #e6ecf5; width: 52px; }
+
+/* The header strip is not a data row -- keep the grid's row hover off it. */
+.obligation-child-header-row:hover td { background: #f2f6fc; }
+
+/* ---------- Change Management: atomic approval bundles ----------
+   A composite save emits one change request per sub-entity, all sharing a
+   bundle_id.  The checker queue collapses them into one parent row carrying
+   this badge, because the database actions the whole bundle together. */
+.cm-bundle-parent-row .tree-reference {
+  font-weight: 800;
+}
+
+.cm-bundle-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #eef4fc;
+  border: 1px solid #c8dcf5;
+  color: #2465ca;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .01em;
+  white-space: nowrap;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.cm-bundle-badge i {
+  font-size: 9.5px;
+}
+
+.cm-bundle-child-row td {
+  background: #f9fbfd;
+}
+
+.cm-bundle-child-row .tree-reference {
+  font-size: 11.5px;
+  color: #475467;
+  font-weight: 600;
+}
+
+.cm-bundle-child-row i {
+  color: #98a2b3;
+  font-size: 10.5px;
 }
 
 .button.tiny {

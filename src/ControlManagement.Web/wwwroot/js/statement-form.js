@@ -6,8 +6,8 @@
   const mode = String(cfg.mode || "add").toLowerCase();
   const readonly = mode === "view";
   const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
-  const pathBase = (window.cmPathBase || "").replace(/\/$/, "");
-  const appUrl = path => `${pathBase}${path}`;
+  // Resolved against the application root (see gracUrl in site.js).
+  const appUrl = path => window.gracUrl.app(path);
   const appAlert = (message, type = "info", title = "") => window.gracAlert ? window.gracAlert({ message, type, title }) : Promise.resolve(window.alert(message));
 
   const form = document.querySelector("#statementForm");
@@ -231,7 +231,6 @@
       statementReference: document.querySelector("#field-statementReference").value.trim(),
       statementTitle: document.querySelector("#field-statementTitle").value.trim(),
       statementText: document.querySelector("#field-statementText").value.trim(),
-      statementType: document.querySelector("#field-statementType").value.trim(),
       displayOrder: Number(document.querySelector("#field-displayOrder")?.value || 0),
       status: document.querySelector("#field-status")?.value || "Active",
       remarks: document.querySelector("#field-remarks").value.trim()
@@ -247,10 +246,10 @@
   }
 
   function returnBack() {
-    const target = cfg.returnUrl && cfg.returnUrl.startsWith(window.location.origin)
-      ? cfg.returnUrl
-      : appUrl("/Repository/Index/framework-statements");
-    window.location.assign(target);
+    // cfg.returnUrl is Referer-derived.  It is honoured only when it points
+    // inside THIS application -- an origin check alone would accept a page from
+    // a sibling GRAC app on the same host and drop the user outside the base URL.
+    window.location.assign(window.gracUrl.safeReturn(cfg.returnUrl, "/Repository/Index/framework-statements"));
   }
 
   async function save() {
@@ -285,7 +284,6 @@
       setValue("statementReference", valueOf(record, "statementReference") || "");
       setValue("statementTitle", valueOf(record, "statementTitle") || "");
       setValue("statementText", valueOf(record, "statementText") || "");
-      setValue("statementType", valueOf(record, "statementType") || "");
       setValue("displayOrder", valueOf(record, "displayOrder") || 0);
       setValue("remarks", valueOf(record, "remarks") || "");
 

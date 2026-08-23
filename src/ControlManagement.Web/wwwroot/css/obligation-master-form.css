@@ -1,0 +1,367 @@
+/* ===================================================================
+   Obligation Master -- merged full-page form (Phase 3)
+   Rendered by Views/Repository/ObligationMasterForm.cshtml.
+
+   Layers on top of obligation-mapping-form.css, which already supplies
+   the shared page shell (.om-page-heading, .om-card, .om-form-grid,
+   .om-table, .om-action-bar, .om-chip*, .form-message).  Only the pieces
+   unique to this screen live here.
+   =================================================================== */
+
+.page-subtitle {
+    margin: 3px 0 0;
+    font-size: 12px;
+    color: #53627a;
+    line-height: 1.35;
+    max-width: 780px;
+}
+
+/* Page-level density.  Only scoped to this form so sibling screens that also
+   use .om-form-page / .om-card are untouched. */
+#obligationMasterForm.om-form-page {
+    gap: 12px;
+    padding-bottom: 68px;
+}
+#obligationMasterForm .om-card { padding: 12px 16px; }
+#obligationMasterForm .om-card-heading { margin-bottom: 8px; }
+#obligationMasterForm .om-card-heading h2 { font-size: 13.5px; }
+#obligationMasterForm .om-card-heading p { font-size: 11.5px; }
+
+/* ---------- 12-column form grid ----------
+   The shared .om-form-grid is a fixed 2-column layout, which forced short
+   controls (Status, Retention, frequencies) onto a row each and made this
+   form scroll far more than it needed to.  A 12-column track lets fields
+   declare their own width, so three short controls share a row and only
+   genuinely long-form inputs take the full width.
+   Column count steps down at narrower viewports rather than collapsing
+   straight to one, so a laptop still gets two-up. */
+.omf-grid {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 10px 14px;
+    align-items: start;
+}
+.omf-grid .form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+.omf-grid .form-field-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: #344054;
+    line-height: 1.3;
+}
+.omf-grid .required { color: #b42318; }
+
+.omf-span-3  { grid-column: span 3; }
+.omf-span-4  { grid-column: span 4; }
+.omf-span-6  { grid-column: span 6; }
+.omf-span-8  { grid-column: span 8; }
+.omf-span-12 { grid-column: span 12; }
+
+/* Controls fill their column; no per-field max-width, which is what made the
+   old 2-column layout look sparse on wide screens. */
+.omf-grid select,
+.omf-grid input[type="text"],
+.omf-grid input[type="number"],
+.omf-grid textarea {
+    width: 100%;
+    max-width: none;
+    border: 1px solid #d7e0ec;
+    border-radius: 8px;
+    background: #fff;
+    font-size: 13px;
+    color: #172033;
+    font-family: inherit;
+}
+.omf-grid select,
+.omf-grid input[type="text"],
+.omf-grid input[type="number"] {
+    height: 36px;
+    padding: 0 12px;
+}
+.omf-grid textarea {
+    padding: 7px 12px;
+    resize: vertical;
+    min-height: 48px;
+    line-height: 1.4;
+}
+.omf-grid select:focus,
+.omf-grid input:focus,
+.omf-grid textarea:focus {
+    outline: 2px solid #2465ca33;
+    border-color: #2465ca;
+}
+.omf-grid select:disabled,
+.omf-grid input:disabled,
+.omf-grid textarea:disabled {
+    background: #f4f7fb;
+    color: #667085;
+    cursor: not-allowed;
+}
+.omf-grid .form-field-hint {
+    font-size: 11px;
+    color: #667085;
+    line-height: 1.3;
+}
+/* Keywords sits inside .tag-input-wrap; make the wrapper transparent to the
+   grid so the input still stretches to the column. */
+.omf-grid .tag-input-wrap { width: 100%; }
+.omf-grid .tag-input-wrap input { width: 100%; }
+
+/* The similar-obligations grid is a grid child, not a form field. */
+.omf-grid > .similar-controls { margin: 0; }
+.omf-grid > .similar-controls[hidden] { display: none; }
+
+@media (max-width: 1200px) {
+    .omf-span-3 { grid-column: span 4; }
+    .omf-span-6 { grid-column: span 8; }
+}
+@media (max-width: 860px) {
+    .omf-span-3,
+    .omf-span-4,
+    .omf-span-6,
+    .omf-span-8 { grid-column: span 12; }
+}
+
+/* Inputs / textareas inside the shared grid.  obligation-mapping-form.css
+   styles selects only, because that form has no free-text fields. */
+.om-form-grid input[type="text"],
+.om-form-grid input[type="number"],
+.om-form-grid textarea {
+    width: 100%;
+    border: 1px solid #d7e0ec;
+    border-radius: 8px;
+    padding: 7px 12px;
+    background: #fff;
+    font-size: 13px;
+    color: #172033;
+    font-family: inherit;
+}
+.om-form-grid input[type="text"],
+.om-form-grid input[type="number"] { height: 36px; padding: 0 12px; }
+.om-form-grid textarea { resize: vertical; min-height: 56px; line-height: 1.4; }
+.om-form-grid input:focus,
+.om-form-grid textarea:focus {
+    outline: 2px solid #2465ca33;
+    border-color: #2465ca;
+}
+.om-form-grid input:disabled,
+.om-form-grid textarea:disabled,
+.om-form-grid select:disabled {
+    background: #f4f7fb;
+    color: #667085;
+    cursor: not-allowed;
+}
+.om-form-grid .form-field-hint {
+    font-size: 11px;
+    color: #667085;
+    line-height: 1.35;
+}
+
+/* ---------- Type-dependent region ----------
+   An inset panel on a tinted surface, not a nested card.  Purpose is to make
+   the static / dynamic boundary obvious: fields inside here are owned by the
+   selected Obligation Type and are replaced wholesale when it changes.
+   Tint + inset border give that boundary without a second card header. */
+.omf-typed-panel {
+    margin-top: 12px;
+    padding: 11px 13px 13px;
+    background: #f7f9fc;
+    border: 1px solid #e3e9f3;
+    border-radius: 8px;
+}
+.omf-typed-panel[hidden] { display: none; }
+
+.omf-typed-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.omf-typed-panel-titles { min-width: 0; }
+.omf-typed-panel-titles h3 {
+    margin: 0 0 1px;
+    font-size: 12.5px;
+    font-weight: 700;
+    color: #0a163a;
+    letter-spacing: .01em;
+}
+.omf-typed-panel-titles p {
+    margin: 0;
+    font-size: 11.5px;
+    color: #667085;
+    line-height: 1.35;
+}
+
+/* Names the type driving this region, so the link back to the Type dropdown
+   is explicit rather than inferred. */
+.omf-type-chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: #eef4fc;
+    border: 1px solid #c8dcf5;
+    color: #2465ca;
+    font-size: 10.5px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+.omf-type-chip[hidden] { display: none; }
+
+/* Controls sit on the panel tint, so they keep a white fill to stay legible. */
+.omf-typed-panel .omf-grid select,
+.omf-typed-panel .omf-grid input[type="text"],
+.omf-typed-panel .omf-grid input[type="number"],
+.omf-typed-panel .omf-grid textarea {
+    background: #fff;
+}
+
+/* Same slot, same frame, for the Evidence type -- which owns no fields. */
+.omf-typed-panel-empty {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12px;
+    color: #344054;
+    line-height: 1.45;
+    padding: 9px 13px;
+}
+.omf-typed-panel-empty i { color: #2465ca; margin-top: 2px; }
+
+/* Evidence Details grid.  Reuses .om-table for chrome; only the column
+   widths and the row-remove control are specific to this screen. */
+/* Four columns since Assurance Frequency was removed from this grid; the 22%
+   it held is shared out so the widths still total 100%. */
+.omf-evidence-table col.omf-col-evtype    { width: 30%; }
+.omf-evidence-table col.omf-col-evret     { width: 26%; }
+.omf-evidence-table col.omf-col-evremarks { width: 38%; }
+.omf-evidence-table col.omf-col-evactions { width: 6%; }
+
+.omf-evidence-table tbody td { padding: 6px 8px; vertical-align: middle; }
+.omf-evidence-table input[type="text"] {
+    width: 100%;
+    height: 32px;
+    border: 1px solid #d7e0ec;
+    border-radius: 7px;
+    padding: 0 9px;
+    font-size: 12.5px;
+    color: #172033;
+    background: #fff;
+}
+.omf-evidence-table input[type="text"]:focus {
+    outline: 2px solid #2465ca33;
+    border-color: #2465ca;
+}
+.omf-evidence-table td.omf-ev-actions { text-align: center; }
+.omf-ev-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: 1px solid #f0c5c0;
+    background: #fff;
+    color: #b42318;
+    border-radius: 7px;
+    font-size: 17px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    transition: background .12s ease;
+}
+.omf-ev-remove:hover { background: #fef3f2; }
+.omf-ev-remove:focus-visible { outline: 2px solid #b4231855; outline-offset: 1px; }
+
+/* ---------- Type-change confirmation ---------- */
+.omf-confirm {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+.omf-confirm.is-open { pointer-events: auto; }
+.omf-confirm-overlay {
+    position: absolute;
+    inset: 0;
+    background: #0b153355;
+    opacity: 0;
+    transition: opacity .16s ease;
+}
+.omf-confirm.is-open .omf-confirm-overlay { opacity: 1; }
+.omf-confirm-card {
+    position: relative;
+    width: min(460px, 92vw);
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 18px 40px #17203333;
+    padding: 20px 22px 16px;
+    transform: translateY(8px) scale(.98);
+    opacity: 0;
+    transition: transform .16s ease, opacity .16s ease;
+}
+.omf-confirm.is-open .omf-confirm-card { transform: none; opacity: 1; }
+.omf-confirm-card h2 {
+    margin: 0 0 8px;
+    font-size: 15px;
+    font-weight: 700;
+    color: #0a163a;
+}
+.omf-confirm-card p {
+    margin: 0 0 18px;
+    font-size: 13px;
+    color: #344054;
+    line-height: 1.5;
+}
+.omf-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+.omf-confirm-actions .button { min-width: 0; height: 34px; padding: 6px 14px; font-size: 13px; }
+
+/* Source Statement Mapping (056).
+   The tree itself is styled by .requirement-control-* / .req-tree-* in
+   repository-actions.css, shared with the Practice form.  Only two things
+   need adjusting for this page: the panel already sits inside a white
+   .om-card, so its own tinted box and border would read as a card inside a
+   card; and an empty tree must not collapse to nothing while it loads. */
+.omf-statement-map {
+    padding: 0;
+    background: transparent;
+    border: 0;
+}
+.omf-statement-map .requirement-control-tree {
+    min-height: 220px;
+}
+
+@media (max-width: 900px) {
+    /* One column: the search box next to the heading has nowhere to go on a
+       narrow screen, and squeezing it makes both unreadable. */
+    .omf-statement-map .requirement-control-head {
+        grid-template-columns: 1fr;
+    }
+    .omf-evidence-table thead { display: none; }
+    .omf-evidence-table, .omf-evidence-table tbody,
+    .omf-evidence-table tr, .omf-evidence-table td { display: block; width: 100%; }
+    .omf-evidence-table tr {
+        border: 1px solid #e3e9f3;
+        border-radius: 10px;
+        margin-bottom: 12px;
+        padding: 4px 0;
+        background: #fff;
+    }
+    .omf-evidence-table td { border: 0; padding: 6px 12px; }
+    .omf-evidence-table td.omf-ev-actions { text-align: right; }
+    .omf-confirm-actions { flex-direction: column-reverse; }
+    .omf-confirm-actions .button { width: 100%; }
+}

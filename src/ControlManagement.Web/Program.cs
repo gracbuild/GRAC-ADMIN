@@ -78,7 +78,10 @@ app.Use(async (context, next) =>
                       || path.StartsWith("/lib/", StringComparison.OrdinalIgnoreCase);
         if (!allowed)
         {
-            context.Response.Redirect("/Account/ChangePassword");
+            // Request.Path excludes the application root, so the redirect target
+            // has to be rebuilt with PathBase -- otherwise the browser is sent to
+            // the site root when published under an IIS virtual directory.
+            context.Response.Redirect($"{context.Request.PathBase}/Account/ChangePassword");
             return;
         }
     }

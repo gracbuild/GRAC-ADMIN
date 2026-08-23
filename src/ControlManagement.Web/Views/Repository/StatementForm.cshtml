@@ -13,13 +13,8 @@
         <h1 id="statementPageTitle">@ViewData["Title"]</h1>
         <p>Capture the original regulatory statement under the selected release and source structure node.</p>
     </div>
-    <div class="page-heading-actions">
-        <button class="button" id="statementBack" type="button"><i class="fa-solid fa-arrow-left"></i> Cancel / Back</button>
-        @if (!readonlyMode && (permissions.Contains("ADD") || permissions.Contains("EDIT")))
-        {
-            <button class="button primary" id="statementSave" type="button"><i class="fa-solid fa-save"></i> Save</button>
-        }
-    </div>
+    @* Save / Cancel live in the bottom action bar, matching every other
+       full-page form and the record dialog. *@
 </div>
 
 <div id="statementMessage" class="form-message statement-message" hidden></div>
@@ -67,10 +62,9 @@
                 <span class="form-field-label">Statement Text <span class="required">*</span></span>
                 <textarea id="field-statementText" name="statementText" rows="4" required></textarea>
             </div>
-            <div class="form-field">
-                <span class="form-field-label">Statement Type</span>
-                <input id="field-statementType" name="statementType" type="text" />
-            </div>
+            @* Statement Type removed: free text that nothing read back, and it
+               duplicated Statement Classification, which is the governed one.
+               The column and any bulk-uploaded values remain in the database. *@
             @if (mode != "add")
             {
                 <div class="form-field">
@@ -89,6 +83,16 @@
         </div>
     </section>
 </form>
+
+<div class="om-action-bar">
+    <div class="om-action-bar-inner">
+        <button class="button" id="statementBack" type="button"><i class="fa-solid fa-arrow-left"></i> Cancel / Back</button>
+        @if (!readonlyMode && (permissions.Contains("ADD") || permissions.Contains("EDIT")))
+        {
+            <button class="button primary" id="statementSave" type="button"><i class="fa-solid fa-save"></i> Save</button>
+        }
+    </div>
+</div>
 
 @section Scripts {
     <script>

@@ -1,4 +1,4 @@
-/*
+﻿/*
   GRAC Regulatory Intelligence Repository and Change Management Engine
   Standalone SQL Server schema. Rerunnable for first-review deployment.
   All mutable entities use status-based retirement. Audit rows are append-only.
@@ -484,7 +484,20 @@ GO
 MERGE GRAC_New.reference_option AS target
 USING (VALUES
  ('status-active','Active','Active',1),('status-active','Inactive','Inactive',2),('status-active','Retired','Retired',3),
- ('release-status','Draft','Draft',1),('release-status','Active','Active',2),('release-status','Retired','Retired',3),('release-status','Archived','Archived',4),
+ -- Purpose-specific status vocabularies (049).  'status-active' carried all
+ -- three values and every screen's filter merged everything, so grids offered
+ -- values their own tables never hold.  Each screen now points at the group
+ -- that matches what its table actually stores.
+ --   status-repository -- repository masters: Active / Retired
+ --   status-admin      -- access administration: Active / Inactive
+ ('status-repository','Active','Active',1),('status-repository','Retired','Retired',2),
+ ('status-admin','Active','Active',1),('status-admin','Inactive','Inactive',2),
+ -- Change Management grids list change requests, whose status vocabulary is the
+ -- workflow one, not Active/Retired.  Matches ck_cm_chg_status.
+ ('status-change-request','Pending Approval','Pending Approval',1),('status-change-request','Approved','Approved',2),('status-change-request','Auto Approved','Auto Approved',3),('status-change-request','Rejected','Rejected',4),('status-change-request','Sent Back','Sent Back',5),
+ -- 'Archived' is never written to release.status (RETIRE writes 'Retired'), so
+ -- it is not seeded.  049 retires the option on databases that already have it.
+ ('release-status','Draft','Draft',1),('release-status','Active','Active',2),('release-status','Retired','Retired',3),
  ('artifact-categories','Regulation','Regulation',1),('artifact-categories','Standard','Standard',2),('artifact-categories','Framework','Framework',3),('artifact-categories','Law','Law',4),('artifact-categories','Directive','Directive',5),('artifact-categories','Circular','Circular',6),('artifact-categories','Guideline','Guideline',7),('artifact-categories','Accreditation Program','Accreditation Program',8),
  ('industries','Banking','Banking',1),('industries','Insurance','Insurance',2),('industries','Healthcare','Healthcare',3),('industries','Financial Services','Financial Services',4),('industries','IT / ITES','IT / ITES',5),('industries','Government','Government',6),('industries','Education','Education',7),('industries','Manufacturing','Manufacturing',8),('industries','Retail','Retail',9),('industries','Telecom','Telecom',10),('industries','Others','Others',11),('industries','All Industries','All Industries',12),('industries','Banking and Financial Services','Banking and Financial Services',13),('industries','Securities Market','Securities Market',14),('industries','Payment Card Industry','Payment Card Industry',15),
  ('jurisdictions','India','India',1),('jurisdictions','UAE','UAE',2),('jurisdictions','Saudi Arabia','Saudi Arabia',3),('jurisdictions','Qatar','Qatar',4),('jurisdictions','Bahrain','Bahrain',5),('jurisdictions','Oman','Oman',6),('jurisdictions','Kuwait','Kuwait',7),('jurisdictions','United States','United States',8),('jurisdictions','United Kingdom','United Kingdom',9),('jurisdictions','European Union','European Union',10),('jurisdictions','Global','Global',11),('jurisdictions','Others','Others',12),('jurisdictions','International','International',13),

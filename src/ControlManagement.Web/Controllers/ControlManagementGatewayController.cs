@@ -18,6 +18,14 @@ public sealed class ControlManagementGatewayController(SecureRepositoryClient cl
     IConfiguration configuration,
     ILogger<ControlManagementGatewayController> logger) : ControllerBase
 {
+    // Read-only Source Statement mapping entity types (056).  Both are served
+    // by dbo.cm_get_obligation_statement_map and gated on the Obligations
+    // permission area rather than one of their own.
+    private static readonly HashSet<string> ObligationStatementMapReads = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "obligation-statement-mappings", "obligation-statement-releases"
+    };
+
     [HttpGet("{entityType}")]
     public async Task<IActionResult> Query(string entityType, [FromQuery] int? id, [FromQuery] string search = "",
         [FromQuery] string status = "", [FromQuery] int? authorityId = null, [FromQuery] int? artifactId = null,
@@ -37,7 +45,12 @@ public sealed class ControlManagementGatewayController(SecureRepositoryClient cl
                 ? "obligations"
                 : entityType.Equals("requirements-similar", StringComparison.OrdinalIgnoreCase)
                     ? "requirements"
-                    : entityType;
+                    // Source Statement mapping reads (056) piggy-back on
+                    // Obligations for the same reason: both pages that call
+                    // them already require VIEW on Obligations to open.
+                    : ObligationStatementMapReads.Contains(entityType)
+                        ? "obligations"
+                        : entityType;
         if (!permissionPolicy.IsAllowed(roles, permissionArea, "VIEW")) return Forbid();
         NavigationContext? context;
         try { context = ResolveNavigationContext(token, code, entityType); }
@@ -124,7 +137,10 @@ public sealed class ControlManagementGatewayController(SecureRepositoryClient cl
     {
         if (!TrySession(out var token, out var roles)) return Unauthorized(new { success = false, message = "Your session has expired. Please sign in again." });
         var action = command.Id.GetValueOrDefault() > 0 ? "EDIT" : "ADD";
-        if (!permissionPolicy.IsAllowed(roles, entityType, action)) return Forbid();
+        // Obligation Taxonomy entity types share the 'obligations' permission
+        // area (same policy as the API-side alias) so admins do not have to
+        // grant per-type permissions.
+        if (!permissionPolicy.IsAllowed(roles, GatewayPermissionArea(entityType), action)) return Forbid();
         JsonElement data;
         try { data = ApplyNavigationContext(token, entityType, command.Data); }
         catch (CryptographicException) { return BadRequest(new { success = false, message = "The navigation context is invalid or has expired." }); }
@@ -136,6 +152,31 @@ public sealed class ControlManagementGatewayController(SecureRepositoryClient cl
             EntityType = entityType, Id = command.Id, Action = "SAVE", Data = data
         }, cancellationToken));
     }
+
+    // Mirror of the API-side ObligationTaxonomyPermissionAliases policy so
+    // the gateway forwards typed-obligation writes to the 'obligations'
+    // permission check.  Kept as a plain helper (not a HashSet) to keep the
+    // dependency surface of this file unchanged.
+    private static string GatewayPermissionArea(string entityType) =>
+        entityType.Equals("obligation-types", StringComparison.OrdinalIgnoreCase)
+        || entityType.Equals("obligation-type-assignment", StringComparison.OrdinalIgnoreCase)
+        || entityType.Equals("obligation-state", StringComparison.OrdinalIgnoreCase)
+        || entityType.Equals("obligation-execution", StringComparison.OrdinalIgnoreCase)
+        || entityType.Equals("obligation-assurance", StringComparison.OrdinalIgnoreCase)
+        || entityType.Equals("obligation-event-response", StringComparison.OrdinalIgnoreCase)
+        || entityType.Equals("obligation-constraint", StringComparison.OrdinalIgnoreCase)
+        || entityType.Equals("obligation-retention", StringComparison.OrdinalIgnoreCase)
+        || entityType.Equals("obligation-evidence-links", StringComparison.OrdinalIgnoreCase)
+        || entityType.Equals("obligation-composite", StringComparison.OrdinalIgnoreCase)
+        || entityType.Equals("event-types", StringComparison.OrdinalIgnoreCase)
+            ? "obligations"
+        // Event-driven assurance runtime (035/036): the checklist and subject
+        // reads are sub-reads of the Event Checklists screen, so they share
+        // its permission area rather than carrying one each.
+        : entityType.Equals("assurance-checklist", StringComparison.OrdinalIgnoreCase)
+        || entityType.Equals("event-subjects", StringComparison.OrdinalIgnoreCase)
+            ? "assurance-occurrences"
+            : entityType;
 
     /// <summary>
     /// Admin reset to default password.  Only valid for user-management.
@@ -165,6 +206,43 @@ public sealed class ControlManagementGatewayController(SecureRepositoryClient cl
         return await InvokeAsync(() => client.ManageAsync(token, new SecureRepositoryRequest
         {
             EntityType = entityType, Id = id, Action = "RETIRE", Data = JsonSerializer.SerializeToElement(new { })
+        }, cancellationToken));
+    }
+
+    /// <summary>
+    /// Read-only preview of what a deactivation would cascade to: per-entity
+    /// counts of the still-Active descendants that Retire would take down.
+    /// Changes nothing, but reads what Retire would change, so it carries the
+    /// same DELETE permission.
+    /// </summary>
+    [HttpPost("{entityType}/{id:int}/deactivation-impact")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> DeactivationImpact(string entityType, int id, CancellationToken cancellationToken)
+    {
+        if (!TrySession(out var token, out var roles)) return Unauthorized(new { success = false, message = "Your session has expired. Please sign in again." });
+        if (!permissionPolicy.IsAllowed(roles, entityType, "DELETE")) return Forbid();
+        return await InvokeAsync(() => client.ManageAsync(token, new SecureRepositoryRequest
+        {
+            EntityType = entityType, Id = id, Action = "RETIRE_IMPACT", Data = JsonSerializer.SerializeToElement(new { })
+        }, cancellationToken));
+    }
+
+    /// <summary>
+    /// Re-enables a record that was previously marked Inactive / Retired.  The
+    /// mirror of <see cref="Retire"/>, and gated on the same DELETE permission:
+    /// whoever may deactivate a record may bring it back.  For the maker-checker
+    /// areas cm_manage_repository raises an 'Activate' change request rather
+    /// than flipping the status directly.
+    /// </summary>
+    [HttpPost("{entityType}/{id:int}/activate")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> Activate(string entityType, int id, CancellationToken cancellationToken)
+    {
+        if (!TrySession(out var token, out var roles)) return Unauthorized(new { success = false, message = "Your session has expired. Please sign in again." });
+        if (!permissionPolicy.IsAllowed(roles, entityType, "DELETE")) return Forbid();
+        return await InvokeAsync(() => client.ManageAsync(token, new SecureRepositoryRequest
+        {
+            EntityType = entityType, Id = id, Action = "ACTIVATE", Data = JsonSerializer.SerializeToElement(new { })
         }, cancellationToken));
     }
 
@@ -201,6 +279,53 @@ public sealed class ControlManagementGatewayController(SecureRepositoryClient cl
         return await InvokeAsync(() => client.ManageAsync(token, new SecureRepositoryRequest
         {
             EntityType = entityType, Id = id, Action = "SEND_BACK", Data = JsonSerializer.SerializeToElement(new { command.Comments })
+        }, cancellationToken));
+    }
+
+    // ------------------------------------------------------------
+    // Assurance Management (Phase 1) lifecycle endpoints.  These map
+    // to the SUBMIT / PUBLISH / RETIRE_PUBLISHED actions handled by
+    // dbo.cm_manage_assurance_repository.  Permission mapping:
+    //   Submit  -> EDIT     (any editor can send Draft to Review)
+    //   Publish -> APPROVE  (only approvers can publish)
+    //   Retire  -> APPROVE  (only approvers can retire a published version)
+    // ------------------------------------------------------------
+    [HttpPost("{entityType}/{id:int}/submit")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> Submit(string entityType, int id, [FromBody] ApprovalCommand? command, CancellationToken cancellationToken)
+    {
+        if (!TrySession(out var token, out var roles)) return Unauthorized(new { success = false, message = "Your session has expired. Please sign in again." });
+        if (!permissionPolicy.IsAllowed(roles, entityType, "EDIT")) return Forbid();
+        return await InvokeAsync(() => client.ManageAsync(token, new SecureRepositoryRequest
+        {
+            EntityType = entityType, Id = id, Action = "SUBMIT",
+            Data = JsonSerializer.SerializeToElement(new { remarks = command?.Comments })
+        }, cancellationToken));
+    }
+
+    [HttpPost("{entityType}/{id:int}/publish")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> Publish(string entityType, int id, [FromBody] ApprovalCommand? command, CancellationToken cancellationToken)
+    {
+        if (!TrySession(out var token, out var roles)) return Unauthorized(new { success = false, message = "Your session has expired. Please sign in again." });
+        if (!permissionPolicy.IsAllowed(roles, entityType, "APPROVE")) return Forbid();
+        return await InvokeAsync(() => client.ManageAsync(token, new SecureRepositoryRequest
+        {
+            EntityType = entityType, Id = id, Action = "PUBLISH",
+            Data = JsonSerializer.SerializeToElement(new { remarks = command?.Comments })
+        }, cancellationToken));
+    }
+
+    [HttpPost("{entityType}/{id:int}/retire-published")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> RetirePublished(string entityType, int id, [FromBody] ApprovalCommand? command, CancellationToken cancellationToken)
+    {
+        if (!TrySession(out var token, out var roles)) return Unauthorized(new { success = false, message = "Your session has expired. Please sign in again." });
+        if (!permissionPolicy.IsAllowed(roles, entityType, "APPROVE")) return Forbid();
+        return await InvokeAsync(() => client.ManageAsync(token, new SecureRepositoryRequest
+        {
+            EntityType = entityType, Id = id, Action = "RETIRE_PUBLISHED",
+            Data = JsonSerializer.SerializeToElement(new { remarks = command?.Comments })
         }, cancellationToken));
     }
 

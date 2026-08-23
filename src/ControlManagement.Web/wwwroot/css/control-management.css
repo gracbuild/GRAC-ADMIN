@@ -342,6 +342,18 @@ textarea {
   padding: 4px 8px;
 }
 
+/* Deactivated / retired / rejected records. */
+.badge.badge-muted {
+  background: #f1f3f7;
+  color: #5f6b80;
+}
+
+/* Awaiting a checker, or not yet live. */
+.badge.badge-pending {
+  background: #fdf3e2;
+  color: #8a5a06;
+}
+
 dialog {
   border: 0;
   border-radius: 10px;
@@ -449,6 +461,52 @@ dialog form {
 .dialog-actions {
   justify-content: flex-end;
   margin-top: 18px;
+}
+
+/* ------------------------------------------------------- form action bar ---
+   Project-wide standard for full-page forms: Save / Cancel dock to the bottom
+   right and stay reachable while the form scrolls.  The modal record dialog
+   uses .dialog-actions above, which sits in the same place.
+
+     <div class="om-action-bar">
+       <div class="om-action-bar-inner">
+         <button class="button">Cancel / Back</button>
+         <button class="button primary">Save</button>
+       </div>
+     </div>
+   -------------------------------------------------------------------------- */
+
+.om-action-bar {
+  position: sticky;
+  bottom: 0;
+  margin-top: 10px;
+  padding: 6px 0;
+  background: linear-gradient(to top, #ffffff 90%, #ffffff00);
+  z-index: 2;
+}
+
+.om-action-bar-inner {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #fff;
+  border: 1px solid #e3e9f3;
+  border-radius: 8px;
+}
+
+.om-action-bar-inner .button {
+  min-width: 0;
+  padding: 6px 14px;
+  height: 34px;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .om-action-bar-inner {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
 }
 
 @media (max-width: 1180px) {

@@ -1,0 +1,209 @@
+@{
+    var mode = (ViewBag.Mode as string ?? "add").ToLowerInvariant();
+    var readonlyMode = mode == "view";
+    ViewData["Title"] = readonlyMode ? "View SLA"
+                                     : mode == "edit"     ? "Edit SLA"
+                                     : mode == "inactive" ? "Deactivate SLA"
+                                                          : "Add SLA";
+    var permissions = ViewBag.Permissions as string[] ?? [];
+    var isInactiveMode = mode == "inactive";
+}
+<link rel="stylesheet" href="~/css/repository-actions.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/obligation-mapping-form.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/obligation-master-form.css" asp-append-version="true" />
+
+<div class="page-heading om-page-heading">
+    <div>
+        <p class="eyebrow">Repository Management / SLA Master</p>
+        <h1 id="slaPageTitle">@ViewData["Title"]</h1>
+        <p class="page-subtitle">
+            Define the Service Level Agreement for a process and severity classification &mdash; duration,
+            time basis, and the warning / escalation thresholds that drive breach alerts.
+        </p>
+    </div>
+</div>
+
+<div id="slaMessage" class="form-message" hidden></div>
+
+<form id="slaMasterForm" class="om-form-page">
+
+    @* ---------------- 1. Identity & Classification ---------------- *@
+    <section class="om-card om-card-compact">
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2>SLA Identity</h2>
+                <p>Process and severity that this SLA applies to. Combination must be unique.</p>
+            </div>
+        </div>
+
+        <div class="omf-grid">
+            <div class="form-field omf-span-3">
+                <span class="form-field-label">SLA ID</span>
+                <input type="text" id="sla-id" name="slaCode"
+                       placeholder="Auto (e.g. SLA-039)" readonly disabled />
+                <span class="form-field-hint">System generated on save.</span>
+            </div>
+            <div class="form-field omf-span-6">
+                <span class="form-field-label">Process <span class="required">*</span></span>
+                <select id="sla-process" name="processCode"
+                        @(readonlyMode || isInactiveMode ? "disabled" : "") required>
+                    <option value="">-- Select Process --</option>
+                    @* Options populated from api/sla/processes on load.
+                       Seed matches the Obligation Definition workbook:
+                       Gap Analysis, Gap Remediation, Risk Assessment,
+                       Risk Treatment, Exception Approval / Action / Review,
+                       Task Execution, Continuous Assurance, Event Assurance,
+                       Obligation Fulfilment, Custom Task, Periodic Review. *@
+                </select>
+            </div>
+            <div class="form-field omf-span-3">
+                <span class="form-field-label">Classification <span class="required">*</span></span>
+                <select id="sla-classification" name="classification"
+                        @(readonlyMode || isInactiveMode ? "disabled" : "") required>
+                    <option value="">-- Select --</option>
+                    <option value="Critical">Critical</option>
+                    <option value="High">High</option>
+                    <option value="Standard">Standard</option>
+                </select>
+            </div>
+        </div>
+    </section>
+
+    @* ---------------- 2. Duration ---------------- *@
+    <section class="om-card om-card-compact">
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2>Duration</h2>
+                <p>How long the responsible party has before the SLA is breached.</p>
+            </div>
+        </div>
+
+        <div class="omf-grid">
+            <div class="form-field omf-span-3">
+                <span class="form-field-label">Duration Value <span class="required">*</span></span>
+                <input type="number" id="sla-duration-value" name="durationValue"
+                       min="1" max="3650" step="1"
+                       @(readonlyMode || isInactiveMode ? "disabled" : "") required />
+            </div>
+            <div class="form-field omf-span-3">
+                <span class="form-field-label">Duration Unit <span class="required">*</span></span>
+                <select id="sla-duration-unit" name="durationUnit"
+                        @(readonlyMode || isInactiveMode ? "disabled" : "") required>
+                    <option value="">-- Select --</option>
+                    <option value="Hours">Hours</option>
+                    <option value="Days">Days</option>
+                </select>
+            </div>
+            <div class="form-field omf-span-6">
+                <span class="form-field-label">Time Basis <span class="required">*</span></span>
+                <select id="sla-time-basis" name="timeBasis"
+                        @(readonlyMode || isInactiveMode ? "disabled" : "") required>
+                    <option value="">-- Select --</option>
+                    <option value="Business Hours">Business Hours</option>
+                    <option value="Business Days">Business Days</option>
+                    <option value="Business Day">Business Day</option>
+                    <option value="Calendar Days">Calendar Days</option>
+                </select>
+                <span class="form-field-hint">
+                    Business bases honour the working calendar; Calendar Days counts every day.
+                </span>
+            </div>
+        </div>
+    </section>
+
+    @* ---------------- 3. Thresholds ---------------- *@
+    <section class="om-card om-card-compact">
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2>Alert Thresholds</h2>
+                <p>
+                    Percent of the SLA elapsed before a warning or escalation is raised.
+                    Warning must be strictly less than Escalation.
+                </p>
+            </div>
+        </div>
+
+        <div class="omf-grid">
+            <div class="form-field omf-span-3">
+                <span class="form-field-label">Warning % <span class="required">*</span></span>
+                <input type="number" id="sla-warning-pct" name="warningPct"
+                       min="1" max="99" step="1" value="75"
+                       @(readonlyMode || isInactiveMode ? "disabled" : "") required />
+                <span class="form-field-hint">Default 75%.</span>
+            </div>
+            <div class="form-field omf-span-3">
+                <span class="form-field-label">Escalation % <span class="required">*</span></span>
+                <input type="number" id="sla-escalation-pct" name="escalationPct"
+                       min="2" max="100" step="1" value="90"
+                       @(readonlyMode || isInactiveMode ? "disabled" : "") required />
+                <span class="form-field-hint">Default 90%.</span>
+            </div>
+            <div class="form-field omf-span-3">
+                <span class="form-field-label">Status <span class="required">*</span></span>
+                <select id="sla-status" name="status"
+                        @(readonlyMode ? "disabled" : "") required>
+                    <option value="Active">Active</option>
+                    <option value="Inactive">Inactive</option>
+                </select>
+                @if (isInactiveMode)
+                {
+                    <span class="form-field-hint" style="color:#b42318;">
+                        This SLA will be marked Inactive.
+                    </span>
+                }
+            </div>
+            <div class="form-field omf-span-3">
+                <span class="form-field-label">Effective From</span>
+                <input type="date" id="sla-effective-from" name="effectiveFrom"
+                       @(readonlyMode || isInactiveMode ? "disabled" : "") />
+            </div>
+
+            <div class="form-field omf-span-12">
+                <span class="form-field-label">
+                    @(isInactiveMode ? "Deactivation Reason " : "Remarks ")
+                    @if (isInactiveMode) { <span class="required">*</span> }
+                </span>
+                <textarea id="sla-remarks" name="remarks" rows="2"
+                          maxlength="500"
+                          @(readonlyMode ? "disabled" : "")
+                          @(isInactiveMode ? "required" : "")></textarea>
+            </div>
+        </div>
+    </section>
+</form>
+
+<div class="om-action-bar">
+    <div class="om-action-bar-inner">
+        <button type="button" class="button" id="slaCancel">
+            <i class="fa-solid fa-arrow-left"></i> Cancel / Back
+        </button>
+
+        @if (!readonlyMode && !isInactiveMode && (permissions.Contains("ADD") || permissions.Contains("EDIT")))
+        {
+            <button type="button" class="button primary" id="slaSave">
+                <i class="fa-solid fa-save"></i> Save SLA
+            </button>
+        }
+
+        @if (isInactiveMode && permissions.Contains("INACTIVE"))
+        {
+            <button type="button" class="button primary" id="slaDeactivate"
+                    style="background:#b42318;border-color:#b42318;">
+                <i class="fa-solid fa-ban"></i> Confirm Deactivate
+            </button>
+        }
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        window.cmSlaMasterForm = {
+            api: "@ViewBag.ApiBaseUrl",
+            mode: "@mode",
+            slaId: @((int)(ViewBag.SlaId ?? 0)),
+            returnUrl: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewBag.ReturnUrl as string ?? "")),
+            permissions: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(permissions))
+        };
+    </script>
+    <script src="~/js/sla-master-form.js" asp-append-version="true"></script>
+}

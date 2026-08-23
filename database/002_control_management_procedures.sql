@@ -1,4 +1,4 @@
-/*
+﻿/*
   Procedure facade consumed by ControlManagement.Api.
   Queries are metadata-selected but use explicit SQL branches for predictable contracts.
 */
@@ -640,12 +640,21 @@ BEGIN
   applied_record_id BIGINT NULL,
   draft_reference_id BIGINT NULL,
   parent_change_request_id BIGINT NULL,
+  -- Atomic approval bundles (see 031).  A composite save emits one row per
+  -- sub-entity sharing a bundle_id; bundle_seq is the apply order within it.
+  -- NULL for every ordinary single-row change request.  Declared here so a
+  -- fresh database compiles cm_get_repository (which projects BundleId)
+  -- without needing 031 applied first; 031 still ALTERs older databases.
+  bundle_id UNIQUEIDENTIFIER NULL,
+  bundle_seq INT NULL,
   entered_by NVARCHAR(100) NOT NULL CONSTRAINT df_cm_chg_entered_by DEFAULT 'system',
   entered_dt DATETIME2(3) NOT NULL CONSTRAINT df_cm_chg_entered_dt DEFAULT SYSUTCDATETIME(),
   updated_by NVARCHAR(100) NULL,
   updated_dt DATETIME2(3) NULL,
   CONSTRAINT ck_cm_chg_status CHECK(status IN ('Pending Approval','Approved','Rejected','Sent Back','Auto Approved')),
-  CONSTRAINT ck_cm_chg_action CHECK(action_type IN ('Add','Edit','Inactive'))
+  -- 'Activate' (047) re-enables an Inactive / Retired record.  It is a change
+  -- request like any other, so it needs a place in this vocabulary.
+  CONSTRAINT ck_cm_chg_action CHECK(action_type IN ('Add','Edit','Inactive','Activate'))
  );
  CREATE INDEX ix_cm_change_management_status ON GRAC_New.change_management(status,submitted_dt DESC);
  CREATE INDEX ix_cm_change_management_entity ON GRAC_New.change_management(entity_type,record_id);
@@ -660,10 +669,31 @@ BEGIN
   ALTER TABLE GRAC_New.change_management ADD draft_reference_id BIGINT NULL;
  IF COL_LENGTH('GRAC_New.change_management','parent_change_request_id') IS NULL
   ALTER TABLE GRAC_New.change_management ADD parent_change_request_id BIGINT NULL;
+ -- Bundle columns (031).  Added here too so re-running 002 against a
+ -- database that predates 031 still yields a schema cm_get_repository can
+ -- compile against.  Both this and 031 are guarded, so order does not matter.
+ IF COL_LENGTH('GRAC_New.change_management','bundle_id') IS NULL
+  ALTER TABLE GRAC_New.change_management ADD bundle_id UNIQUEIDENTIFIER NULL;
+ IF COL_LENGTH('GRAC_New.change_management','bundle_seq') IS NULL
+  ALTER TABLE GRAC_New.change_management ADD bundle_seq INT NULL;
  IF NOT EXISTS(SELECT 1 FROM sys.indexes WHERE name='ix_cm_change_management_draft' AND object_id=OBJECT_ID('GRAC_New.change_management'))
   EXEC(N'CREATE INDEX ix_cm_change_management_draft ON GRAC_New.change_management(draft_reference_id) WHERE draft_reference_id IS NOT NULL');
  IF NOT EXISTS(SELECT 1 FROM sys.indexes WHERE name='ix_cm_change_management_parent' AND object_id=OBJECT_ID('GRAC_New.change_management'))
   EXEC(N'CREATE INDEX ix_cm_change_management_parent ON GRAC_New.change_management(parent_change_request_id,status) WHERE parent_change_request_id IS NOT NULL');
+ -- Widen the action vocabulary for 'Activate' (047) on databases created
+ -- before it existed.  Existing rows only ever hold Add/Edit/Inactive, so the
+ -- re-added constraint validates without WITH NOCHECK.  Guarded, so re-running
+ -- 002 after the widening is a no-op.
+ IF EXISTS(SELECT 1 FROM sys.check_constraints
+           WHERE name='ck_cm_chg_action'
+             AND parent_object_id=OBJECT_ID('GRAC_New.change_management')
+             AND definition NOT LIKE '%Activate%')
+  ALTER TABLE GRAC_New.change_management DROP CONSTRAINT ck_cm_chg_action;
+ IF NOT EXISTS(SELECT 1 FROM sys.check_constraints
+               WHERE name='ck_cm_chg_action'
+                 AND parent_object_id=OBJECT_ID('GRAC_New.change_management'))
+  ALTER TABLE GRAC_New.change_management
+   ADD CONSTRAINT ck_cm_chg_action CHECK(action_type IN ('Add','Edit','Inactive','Activate'));
 END
 GO
 
@@ -679,6 +709,145 @@ BEGIN
  );
  CREATE INDEX ix_cm_change_field_request ON GRAC_New.change_management_field(change_request_id);
 END
+GO
+
+-- =====================================================================
+-- Cascade deactivation (048)
+--
+-- Deactivating a parent takes its whole subtree down with it -- otherwise the
+-- grids show live Releases hanging off a Retired Artifact.  The rows that were
+-- taken down are recorded here so re-activating the parent can put back
+-- exactly what the cascade touched, and nothing that was already inactive
+-- before it ran.
+-- =====================================================================
+IF OBJECT_ID('GRAC_New.cm_cascade_deactivation','U') IS NULL
+BEGIN
+ CREATE TABLE GRAC_New.cm_cascade_deactivation(
+  cascade_row_id BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT pk_cm_cascade_deactivation PRIMARY KEY,
+  -- One id per deactivation event, so a parent deactivated, reactivated and
+  -- deactivated again keeps three distinct, independently restorable batches.
+  cascade_id UNIQUEIDENTIFIER NOT NULL,
+  root_entity_type NVARCHAR(100) NOT NULL,
+  root_record_id BIGINT NOT NULL,
+  child_entity_type NVARCHAR(100) NOT NULL,
+  child_record_id BIGINT NOT NULL,
+  -- What the child was before the cascade; restore writes this value back.
+  previous_status NVARCHAR(30) NOT NULL,
+  restored_dt DATETIME2(3) NULL,
+  restored_by NVARCHAR(100) NULL,
+  entered_by NVARCHAR(100) NOT NULL,
+  entered_dt DATETIME2(3) NOT NULL CONSTRAINT df_cm_cascade_entered_dt DEFAULT SYSUTCDATETIME()
+ );
+ CREATE INDEX ix_cm_cascade_root ON GRAC_New.cm_cascade_deactivation(root_entity_type,root_record_id,restored_dt);
+ CREATE INDEX ix_cm_cascade_batch ON GRAC_New.cm_cascade_deactivation(cascade_id);
+END
+GO
+
+-- ---------------------------------------------------------------------
+-- Every descendant of a repository record, as (entity_type, record_id).
+-- The root itself is never returned -- callers handle it separately.
+--
+--   authorities        -> artifacts -> releases -> nodes / classifications
+--                         -> statements -> mappings
+--   artifacts          -> releases -> ...
+--   releases           -> nodes / classifications -> statements -> mappings
+--   source-structure   -> child nodes (recursively) -> statements -> mappings
+--   framework-statements -> its two mapping tables
+--
+-- Any other root returns the empty set, which is what the RETIRE branch wants
+-- for standalone records such as Practices or Controls.
+-- ---------------------------------------------------------------------
+CREATE OR ALTER FUNCTION dbo.fn_cm_repository_descendants
+(
+  @p_entity_type NVARCHAR(100),
+  @p_id BIGINT
+)
+RETURNS TABLE
+AS
+RETURN
+WITH art AS (
+  SELECT a.artifact_id
+  FROM GRAC_New.artifact a
+  WHERE @p_entity_type='authorities' AND a.authority_id=@p_id
+),
+rel AS (
+  SELECT r.release_id
+  FROM GRAC_New.release r
+  WHERE (@p_entity_type='artifacts' AND r.artifact_id=@p_id)
+     OR r.artifact_id IN (SELECT artifact_id FROM art)
+),
+node_tree AS (
+  SELECT n.structure_node_id
+  FROM GRAC_New.source_structure_node n
+  WHERE @p_entity_type='source-structure' AND n.parent_node_id=@p_id
+  UNION ALL
+  SELECT c.structure_node_id
+  FROM GRAC_New.source_structure_node c
+  JOIN node_tree t ON c.parent_node_id=t.structure_node_id
+),
+node AS (
+  SELECT n.structure_node_id
+  FROM GRAC_New.source_structure_node n
+  WHERE (@p_entity_type='releases' AND n.release_id=@p_id)
+     OR n.release_id IN (SELECT release_id FROM rel)
+  UNION
+  SELECT structure_node_id FROM node_tree
+),
+cls AS (
+  SELECT c.statement_classification_id
+  FROM GRAC_New.statement_classification c
+  WHERE (@p_entity_type='releases' AND c.release_id=@p_id)
+     OR c.release_id IN (SELECT release_id FROM rel)
+),
+stmt AS (
+  SELECT s.framework_statement_id
+  FROM GRAC_New.framework_statement s
+  WHERE (@p_entity_type='source-structure' AND s.structure_node_id=@p_id)
+     OR s.structure_node_id IN (SELECT structure_node_id FROM node)
+)
+SELECT N'artifacts' AS EntityType, artifact_id AS RecordId FROM art
+UNION ALL SELECT N'releases', release_id FROM rel
+UNION ALL SELECT N'source-structure', structure_node_id FROM node
+UNION ALL SELECT N'statement-classifications', statement_classification_id FROM cls
+UNION ALL SELECT N'framework-statements', framework_statement_id FROM stmt
+UNION ALL SELECT N'source-control-map', m.source_control_map_id
+  FROM GRAC_New.source_control_map m
+  WHERE (@p_entity_type='source-structure' AND m.structure_node_id=@p_id)
+     OR m.structure_node_id IN (SELECT structure_node_id FROM node)
+UNION ALL SELECT N'statement-control-map', m.statement_control_map_id
+  FROM GRAC_New.framework_statement_control_map m
+  WHERE (@p_entity_type='framework-statements' AND m.framework_statement_id=@p_id)
+     OR m.framework_statement_id IN (SELECT framework_statement_id FROM stmt)
+UNION ALL SELECT N'statement-requirement-map', m.statement_requirement_map_id
+  FROM GRAC_New.framework_statement_requirement_map m
+  WHERE (@p_entity_type='framework-statements' AND m.framework_statement_id=@p_id)
+     OR m.framework_statement_id IN (SELECT framework_statement_id FROM stmt);
+GO
+
+-- ---------------------------------------------------------------------
+-- Current status of a descendant, so the cascade can record what to restore
+-- and skip rows that are already inactive.
+-- ---------------------------------------------------------------------
+CREATE OR ALTER FUNCTION dbo.fn_cm_repository_descendant_status
+(
+  @p_entity_type NVARCHAR(100),
+  @p_id BIGINT
+)
+RETURNS TABLE
+AS
+RETURN
+SELECT d.EntityType, d.RecordId,
+       CurrentStatus = CASE d.EntityType
+         WHEN N'artifacts'                 THEN (SELECT status FROM GRAC_New.artifact WHERE artifact_id=d.RecordId)
+         WHEN N'releases'                  THEN (SELECT status FROM GRAC_New.release WHERE release_id=d.RecordId)
+         WHEN N'source-structure'          THEN (SELECT status FROM GRAC_New.source_structure_node WHERE structure_node_id=d.RecordId)
+         WHEN N'statement-classifications' THEN (SELECT status FROM GRAC_New.statement_classification WHERE statement_classification_id=d.RecordId)
+         WHEN N'framework-statements'      THEN (SELECT status FROM GRAC_New.framework_statement WHERE framework_statement_id=d.RecordId)
+         WHEN N'source-control-map'        THEN (SELECT status FROM GRAC_New.source_control_map WHERE source_control_map_id=d.RecordId)
+         WHEN N'statement-control-map'     THEN (SELECT status FROM GRAC_New.framework_statement_control_map WHERE statement_control_map_id=d.RecordId)
+         WHEN N'statement-requirement-map' THEN (SELECT status FROM GRAC_New.framework_statement_requirement_map WHERE statement_requirement_map_id=d.RecordId)
+       END
+FROM dbo.fn_cm_repository_descendants(@p_entity_type,@p_id) d;
 GO
 
 CREATE OR ALTER PROCEDURE dbo.cm_get_repository
@@ -730,6 +899,23 @@ BEGIN
    UNION ALL SELECT 'evidence-types',CAST(evidence_type_id AS NVARCHAR(40)),evidence_type_name FROM GRAC_New.evidence_type_master WHERE is_active=1
    UNION ALL SELECT 'frequency-master',CAST(reference_option_id AS NVARCHAR(40)),option_label FROM GRAC_New.reference_option WHERE status='Active' AND option_group='frequency-types'
    UNION ALL SELECT 'trigger-types',CAST(reference_option_id AS NVARCHAR(40)),option_label FROM GRAC_New.reference_option WHERE status='Active' AND option_group='trigger-types'
+   -- Assurance trigger mode (033): Scheduled | Event Driven.  NO BRANCH NEEDED.
+   --
+   -- The first SELECT in this UNION is a catch-all -- it already emits EVERY
+   -- active reference_option group as (option_group, option_value,
+   -- option_label).  'assurance-trigger-modes' is one of those groups, and the
+   -- form wants exactly option_value as the Value (the code, because
+   -- obligation_assurance_spec stores the code -- a CHECK constraint cannot
+   -- resolve an FK, see 033).  So the catch-all already returns precisely the
+   -- right rows.
+   --
+   -- A dedicated branch here was added and then removed: it re-emitted the
+   -- same LookupKey with the same Value, so every trigger mode appeared TWICE
+   -- in the dropdown.  The neighbouring branches are NOT duplicates -- they
+   -- re-key a group under a different LookupKey ('frequency-master') and emit
+   -- reference_option_id as the Value instead of option_value, which the
+   -- catch-all does not produce.  Match on BOTH LookupKey and Value before
+   -- adding a branch here.
    UNION ALL SELECT 'severity-master',CAST(reference_option_id AS NVARCHAR(40)),option_label FROM GRAC_New.reference_option WHERE status='Active' AND option_group='severity'
     UNION ALL SELECT 'organizations',CAST(organization_id AS NVARCHAR(40)),organization_code+' - '+organization_name FROM GRAC_New.organization WHERE status='Active'
     UNION ALL SELECT 'changes',CAST(change_event_id AS NVARCHAR(40)),change_type+' - '+LEFT(change_summary,120) FROM GRAC_New.change_event WHERE status<>'Archived'
@@ -777,7 +963,7 @@ ELSE IF @p_entity_type='framework-statement-requirement-mappings'
     m.statement_requirement_map_id MappingId,
     @requirement_id RequirementId,
     CASE WHEN m.statement_requirement_map_id IS NOT NULL AND m.status='Active' THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END IsMapped,
-    COALESCE(m.status,'Inactive') Status
+    COALESCE(m.status,'Retired') Status
   FROM GRAC_New.framework_statement fs
   JOIN GRAC_New.source_structure_node n ON n.structure_node_id=fs.structure_node_id
   JOIN GRAC_New.release r ON r.release_id=fs.release_id
@@ -944,6 +1130,13 @@ ELSE IF @p_entity_type='framework-statement-requirement-mappings'
      ro.status                 Status,
      ro.obligation_text        ObligationText,
      COALESCE(ro.keywords, N'') Keywords,
+     -- Taxonomy discriminator (026/027).  Surfaced here so the merged
+     -- Obligation Master form can pre-select the type when editing without
+     -- a second round-trip.  Additive columns -- existing consumers that
+     -- do not read them are unaffected.
+     ro.obligation_type_id     ObligationTypeId,
+     COALESCE(otm.type_code, N'') TypeCode,
+     COALESCE(otm.type_name, N'') TypeName,
      (SELECT COUNT(1) FROM GRAC_New.requirement_obligation_evidence ev
        WHERE ev.obligation_id = ro.obligation_id AND ev.status = 'Active') EvidenceCount,
      (SELECT COUNT(1) FROM GRAC_New.obligation_requirement_release_map m
@@ -1002,6 +1195,11 @@ ELSE IF @p_entity_type='framework-statement-requirement-mappings'
    FROM GRAC_New.requirement_obligation ro
    LEFT JOIN GRAC_New.reference_option freq_exec
      ON freq_exec.reference_option_id = ro.execution_frequency_id
+   -- Taxonomy type (026/027).  LEFT JOIN because obligation_type_id is
+   -- nullable: obligations created before the taxonomy, or not yet
+   -- classified, still list with an empty TypeCode.
+   LEFT JOIN GRAC_New.obligation_type_master otm
+     ON otm.obligation_type_id = ro.obligation_type_id
    WHERE (@p_id = 0 OR ro.obligation_id = @p_id)
      AND (@p_status = N'' OR ro.status = @p_status)
      AND (@p_search = N'' OR COALESCE(ro.obligation_name, ro.obligation_text) LIKE N'%'+@p_search+N'%')
@@ -1112,10 +1310,11 @@ ELSE IF @p_entity_type='framework-statement-requirement-mappings'
  BEGIN
    -- Requirement-first matrix:  given a Requirement, return all
    -- (Authority, Artifact, Release, Statement) tuples reachable via the
-   -- Framework Statement <-> Requirement map, plus any currently-active
-   -- Obligation mapping for each (req, rel, stmt) cell.  Frontend renders
-   -- this as the matrix grid and posts the bulk SAVE back when the user
-   -- selects/changes obligations.
+   -- Framework Statement <-> Requirement map, plus every currently-active
+   -- Obligation mapping for each (req, rel, stmt) cell aggregated into a
+   -- JSON array so the front-end can render a multi-select on each row.
+   -- Frontend renders this as the matrix grid and posts the bulk SAVE
+   -- back when the user selects/changes obligations.
    IF @requirement_id IS NULL
      RETURN;
 
@@ -1131,20 +1330,41 @@ ELSE IF @p_entity_type='framework-statement-requirement-mappings'
      fs.framework_statement_id FrameworkStatementId,
      fs.statement_reference    StatementReference,
      fs.statement_title        StatementTitle,
-     m.obligation_map_id   MappedMapId,
-     m.obligation_id       MappedObligationId,
-     COALESCE(ro.obligation_name, LEFT(ro.obligation_text, 500)) MappedObligation
+     COALESCE(mm.MappedObligationIdsCsv, N'')  MappedObligationIdsCsv,
+     COALESCE(mm.MappedObligationsCsv,   N'')  MappedObligationsCsv,
+     COALESCE(mm.MappedObligationsJson,  N'[]') MappedObligationsJson
    FROM GRAC_New.framework_statement_requirement_map fsrm
    JOIN GRAC_New.framework_statement fs ON fs.framework_statement_id = fsrm.framework_statement_id AND fs.status = 'Active'
    JOIN GRAC_New.release r ON r.release_id = fs.release_id
    JOIN GRAC_New.artifact a ON a.artifact_id = r.artifact_id
    JOIN GRAC_New.authority au ON au.authority_id = a.authority_id
-   LEFT JOIN GRAC_New.obligation_requirement_release_map m
-     ON m.requirement_id = fsrm.requirement_id
-    AND m.release_id     = fs.release_id
-    AND m.framework_statement_id = fs.framework_statement_id
-    AND m.status = 'Active'
-   LEFT JOIN GRAC_New.requirement_obligation ro ON ro.obligation_id = m.obligation_id
+   OUTER APPLY (
+     -- Aggregate every Active mapping row for this (req, rel, stmt) cell
+     -- into a JSON list plus flat CSVs.  A cell may hold zero, one, or many
+     -- obligations after the multi-obligation change.
+     SELECT
+       STRING_AGG(CONVERT(NVARCHAR(20), m.obligation_id), N',')
+         WITHIN GROUP (ORDER BY m.obligation_map_id)              AS MappedObligationIdsCsv,
+       STRING_AGG(COALESCE(ro.obligation_name, LEFT(ro.obligation_text, 500)), N', ')
+         WITHIN GROUP (ORDER BY m.obligation_map_id)              AS MappedObligationsCsv,
+       (SELECT m2.obligation_map_id  AS MappedMapId,
+               m2.obligation_id      AS ObligationId,
+               COALESCE(ro2.obligation_name, LEFT(ro2.obligation_text, 500)) AS ObligationName
+        FROM   GRAC_New.obligation_requirement_release_map m2
+        LEFT   JOIN GRAC_New.requirement_obligation ro2 ON ro2.obligation_id = m2.obligation_id
+        WHERE  m2.requirement_id         = fsrm.requirement_id
+          AND  m2.release_id             = fs.release_id
+          AND  m2.framework_statement_id = fs.framework_statement_id
+          AND  m2.status                 = 'Active'
+        ORDER BY m2.obligation_map_id
+        FOR JSON PATH)                                            AS MappedObligationsJson
+     FROM GRAC_New.obligation_requirement_release_map m
+     LEFT JOIN GRAC_New.requirement_obligation ro ON ro.obligation_id = m.obligation_id
+     WHERE m.requirement_id         = fsrm.requirement_id
+       AND m.release_id             = fs.release_id
+       AND m.framework_statement_id = fs.framework_statement_id
+       AND m.status                 = 'Active'
+   ) mm
    WHERE fsrm.requirement_id = @requirement_id
      AND fsrm.status = 'Active'
    ORDER BY au.authority_name, a.artifact_code, r.version_no, fs.display_order, fs.statement_reference;
@@ -1484,6 +1704,17 @@ END
   ELSE IF @p_entity_type='change-management'
     SELECT c.change_request_id Id,c.change_request_no ChangeRequestNumber,c.module_name Module,c.record_reference RecordReference,c.action_type ActionType,c.maker_user Maker,DATEADD(MINUTE,330,c.submitted_dt) SubmittedOn,c.checker_user Checker,DATEADD(MINUTE,330,c.checked_dt) CheckedOn,c.status Status,
       c.record_id RecordId,c.old_data_json OldDataJson,c.proposed_data_json ProposedDataJson,c.checker_comments CheckerComments,
+      c.entity_type EntityType,
+      -- Atomic approval bundle (031/032).  BundleId is NULL for ordinary
+      -- single-row change requests.  When set, the front-end collapses every
+      -- row sharing it into ONE checker card, and actioning any of them
+      -- applies/rejects the whole bundle (see the bundle interception in
+      -- cm_manage_repository's change-management branch).
+      c.bundle_id  BundleId,
+      c.bundle_seq BundleSeq,
+      CASE WHEN c.bundle_id IS NULL THEN 1
+           ELSE (SELECT COUNT(1) FROM GRAC_New.change_management b WHERE b.bundle_id = c.bundle_id)
+      END BundleCount,
       (SELECT f.field_name FieldName,f.old_value OldValue,f.new_value NewValue FROM GRAC_New.change_management_field f WHERE f.change_request_id=c.change_request_id FOR JSON PATH) FieldChangesJson
     FROM GRAC_New.change_management c
     WHERE (@p_id=0 OR c.change_request_id=@p_id)
@@ -1744,7 +1975,21 @@ BEGIN
  SET NOCOUNT ON; SET XACT_ABORT ON; BEGIN TRAN;
  DECLARE @new_id BIGINT=@p_id, @before NVARCHAR(MAX)=NULL, @after NVARCHAR(MAX)=NULL, @audit_action NVARCHAR(40)=NULL, @audit_table NVARCHAR(128)=NULL, @record_reference NVARCHAR(300)=NULL;
  IF NULLIF(@p_usr_id,'') IS NULL SET @p_usr_id='system';
- SET @audit_action=CASE WHEN @p_action='RETIRE' THEN N'Inactive' WHEN @p_action='APPROVE' THEN N'Status Change' WHEN @p_id=0 THEN N'Add' ELSE N'Edit' END;
+ -- Read-only preview (048).  Answers "what else would this deactivation take
+ -- down?" so the UI can show the count before the user confirms.  It lives
+ -- here rather than in cm_get_repository so it reuses the manage plumbing the
+ -- Inactive action already travels through, and so it is gated by the same
+ -- DELETE permission.
+ IF @p_action='RETIRE_IMPACT'
+ BEGIN
+   SELECT EntityType, COUNT(*) AS RecordCount
+   FROM dbo.fn_cm_repository_descendant_status(@p_entity_type,@p_id)
+   WHERE CurrentStatus NOT IN ('Retired','Inactive','Archived')
+   GROUP BY EntityType
+   ORDER BY EntityType;
+   COMMIT; RETURN;
+ END
+ SET @audit_action=CASE WHEN @p_action='RETIRE' THEN N'Inactive' WHEN @p_action='ACTIVATE' THEN N'Activate' WHEN @p_action='APPROVE' THEN N'Status Change' WHEN @p_id=0 THEN N'Add' ELSE N'Edit' END;
  SET @audit_table=CASE @p_entity_type
    WHEN 'authorities' THEN N'GRAC_New.authority'
    WHEN 'artifacts' THEN N'GRAC_New.artifact'
@@ -1798,11 +2043,55 @@ BEGIN
   IF @p_entity_type='change-management'
   BEGIN
     DECLARE @change_status NVARCHAR(40), @target_entity_type NVARCHAR(100), @target_action_type NVARCHAR(30), @target_record_id BIGINT, @target_payload NVARCHAR(MAX), @target_maker NVARCHAR(100), @checker_comments NVARCHAR(MAX)=NULLIF(JSON_VALUE(@p_payload,'$.comments'),N'');
-    SELECT @change_status=status,@target_entity_type=entity_type,@target_action_type=CASE action_type WHEN 'Inactive' THEN 'RETIRE' ELSE 'SAVE' END,@target_record_id=COALESCE(record_id,0),@target_payload=proposed_data_json,@target_maker=maker_user
+    SELECT @change_status=status,@target_entity_type=entity_type,@target_action_type=CASE action_type WHEN 'Inactive' THEN 'RETIRE' WHEN 'Activate' THEN 'ACTIVATE' ELSE 'SAVE' END,@target_record_id=COALESCE(record_id,0),@target_payload=proposed_data_json,@target_maker=maker_user
     FROM GRAC_New.change_management WHERE change_request_id=@p_id;
     IF @change_status IS NULL THROW 50006,'A valid change request identifier is required',1;
     IF @change_status<>'Pending Approval' THROW 50007,'Only pending change requests can be actioned',1;
     IF @p_action IN ('REJECT','SEND_BACK') AND @checker_comments IS NULL THROW 50026,'Checker comments are mandatory.',1;
+
+    -- ------------------------------------------------------------------
+    -- Bundle interception (031/032).
+    --
+    -- A composite save (e.g. the merged Obligation Master form) emits ONE
+    -- change_management row per sub-entity, tied together by bundle_id.
+    -- Those rows MUST be actioned as a unit -- approving the master while
+    -- rejecting its typed detail would leave a half-configured record,
+    -- which is precisely what the bundle exists to prevent.
+    --
+    -- So: if the change request the checker clicked belongs to a bundle,
+    -- delegate to the bundle procedures, which lock every row in the
+    -- bundle and apply / reject them atomically.  The checker can click
+    -- ANY row of the bundle and get the same, whole-bundle outcome.
+    --
+    -- bundle_id is declared by this script's own CREATE TABLE (and back-filled
+    -- by the guarded ALTER above), so it is always present.  When 031 has not
+    -- been applied the sp_cm_change_bundle_* procedures do not exist -- but
+    -- nothing writes bundle_id in that case either, so this branch stays dark.
+    -- ------------------------------------------------------------------
+    DECLARE @cm_bundle_id UNIQUEIDENTIFIER =
+      (SELECT bundle_id FROM GRAC_New.change_management WHERE change_request_id = @p_id);
+
+    IF @cm_bundle_id IS NOT NULL
+    BEGIN
+      -- The bundle procedures own their own transaction, so release the one
+      -- this procedure opened before handing control over.
+      COMMIT;
+
+      IF @p_action = 'APPROVE'
+        EXEC dbo.sp_cm_change_bundle_approve
+             @p_bundle_id = @cm_bundle_id, @p_usr_id = @p_usr_id, @p_comments = @checker_comments;
+      ELSE IF @p_action = 'REJECT'
+        EXEC dbo.sp_cm_change_bundle_reject
+             @p_bundle_id = @cm_bundle_id, @p_usr_id = @p_usr_id, @p_comments = @checker_comments;
+      ELSE IF @p_action = 'SEND_BACK'
+        EXEC dbo.sp_cm_change_bundle_send_back
+             @p_bundle_id = @cm_bundle_id, @p_usr_id = @p_usr_id, @p_comments = @checker_comments;
+      ELSE
+        THROW 50007,'Unsupported change management action',1;
+
+      SELECT @p_id Id; RETURN;
+    END
+
     IF @p_action='APPROVE'
     BEGIN
       -- Resolve the canonical module identity via cm_entity_master so the workflow
@@ -1896,10 +2185,11 @@ BEGIN
   DECLARE @approval_required BIT=COALESCE((
     SELECT TOP 1 approval_required FROM GRAC_New.approval_workflow_config WHERE status='Active' AND entity_id=@entity_master_id
   ), CASE WHEN @p_entity_type IN ('authorities','artifacts','releases','statement-classifications','source-structure','framework-statements','controls','requirements','obligations','control-requirement-mappings','source-control-mappings','applicability-rules') THEN 1 ELSE 0 END);
-  IF @maker_checker_entity=1 AND @approval_bypass=0 AND @approval_required=1 AND @p_action IN ('SAVE','RETIRE')
+  IF @maker_checker_entity=1 AND @approval_bypass=0 AND @approval_required=1 AND @p_action IN ('SAVE','RETIRE','ACTIVATE')
   BEGIN
-    DECLARE @change_action NVARCHAR(30)=CASE WHEN @p_action='RETIRE' THEN N'Inactive' WHEN @p_id=0 THEN N'Add' ELSE N'Edit' END;
-    DECLARE @change_payload NVARCHAR(MAX)=CASE WHEN @p_action='RETIRE' THEN JSON_MODIFY(N'{}','$.status',N'Inactive') ELSE @p_payload END;
+    DECLARE @change_action NVARCHAR(30)=CASE WHEN @p_action='RETIRE' THEN N'Inactive' WHEN @p_action='ACTIVATE' THEN N'Activate' WHEN @p_id=0 THEN N'Add' ELSE N'Edit' END;
+    DECLARE @retire_status NVARCHAR(30)=CASE WHEN @p_entity_type IN ('user-management','role-management','menu-management','role-permissions','approval-workflow') THEN N'Inactive' ELSE N'Retired' END;
+    DECLARE @change_payload NVARCHAR(MAX)=CASE WHEN @p_action='RETIRE' THEN JSON_MODIFY(N'{}','$.status',@retire_status) WHEN @p_action='ACTIVATE' THEN JSON_MODIFY(N'{}','$.status',N'Active') ELSE @p_payload END;
     DECLARE @change_id BIGINT, @parent_change_request_id BIGINT=NULL;
     IF @change_action='Add' AND @p_entity_type='artifacts'
     BEGIN
@@ -1925,7 +2215,7 @@ BEGIN
       UPDATE GRAC_New.change_management SET draft_reference_id=-@change_id WHERE change_request_id=@change_id;
     IF @change_action='Inactive'
       INSERT GRAC_New.change_management_field(change_request_id,field_name,old_value,new_value)
-      VALUES(@change_id,N'Status',JSON_VALUE(@before,'$.status'),N'Inactive');
+      VALUES(@change_id,N'Status',JSON_VALUE(@before,'$.status'),@retire_status);
     ELSE IF @change_action='Add'
       INSERT GRAC_New.change_management_field(change_request_id,field_name,old_value,new_value)
       SELECT @change_id,CASE [key]
@@ -1978,7 +2268,7 @@ BEGIN
     BEGIN
       -- Apply via self-recursive call with bypass flag set so the gate is skipped.
       DECLARE @apply_payload_auto NVARCHAR(MAX) = JSON_MODIFY(COALESCE(@change_payload, N'{}'), '$.__approvalBypass', 1);
-      DECLARE @apply_action_auto NVARCHAR(30)   = CASE WHEN @change_action=N'Inactive' THEN N'RETIRE' ELSE N'SAVE' END;
+      DECLARE @apply_action_auto NVARCHAR(30)   = CASE WHEN @change_action=N'Inactive' THEN N'RETIRE' WHEN @change_action=N'Activate' THEN N'ACTIVATE' ELSE N'SAVE' END;
       DECLARE @apply_result_auto TABLE(Id BIGINT);
       INSERT @apply_result_auto(Id)
       EXEC dbo.cm_manage_repository
@@ -2023,23 +2313,23 @@ BEGIN
   END
  ELSE IF @p_action='RETIRE'
  BEGIN
-   IF @p_entity_type='authorities' UPDATE GRAC_New.authority SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE authority_id=@p_id;
+   IF @p_entity_type='authorities' UPDATE GRAC_New.authority SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE authority_id=@p_id;
    ELSE IF @p_entity_type='artifacts' UPDATE GRAC_New.artifact SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE artifact_id=@p_id;
    ELSE IF @p_entity_type='releases' UPDATE GRAC_New.release SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE release_id=@p_id;
-   ELSE IF @p_entity_type='statement-classifications' UPDATE GRAC_New.statement_classification SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE statement_classification_id=@p_id;
+   ELSE IF @p_entity_type='statement-classifications' UPDATE GRAC_New.statement_classification SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE statement_classification_id=@p_id;
    ELSE IF @p_entity_type='controls' UPDATE GRAC_New.control SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_id=@p_id;
-   ELSE IF @p_entity_type='control-domains' UPDATE GRAC_New.control_domain SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_domain_id=@p_id;
-   ELSE IF @p_entity_type='control-sub-domains' UPDATE GRAC_New.control_sub_domain SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_sub_domain_id=@p_id;
+   ELSE IF @p_entity_type='control-domains' UPDATE GRAC_New.control_domain SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_domain_id=@p_id;
+   ELSE IF @p_entity_type='control-sub-domains' UPDATE GRAC_New.control_sub_domain SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_sub_domain_id=@p_id;
    ELSE IF @p_entity_type='requirements' UPDATE GRAC_New.requirement SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE requirement_id=@p_id;
    ELSE IF @p_entity_type='obligations'
    BEGIN
      UPDATE GRAC_New.obligation SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE obligation_id=@p_id;
-     UPDATE GRAC_New.obligation_evidence_type SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE obligation_id=@p_id AND status='Active';
+     UPDATE GRAC_New.obligation_evidence_type SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE obligation_id=@p_id AND status='Active';
    END
    ELSE IF @p_entity_type='source-structure' UPDATE GRAC_New.source_structure_node SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE structure_node_id=@p_id;
    ELSE IF @p_entity_type='framework-statements' UPDATE GRAC_New.framework_statement SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE framework_statement_id=@p_id;
    ELSE IF @p_entity_type='applicability-rules' UPDATE GRAC_New.applicability_rule SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE applicability_rule_id=@p_id;
-   ELSE IF @p_entity_type='control-requirement-mappings' UPDATE GRAC_New.control_requirement_map SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_requirement_map_id=@p_id;
+   ELSE IF @p_entity_type='control-requirement-mappings' UPDATE GRAC_New.control_requirement_map SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_requirement_map_id=@p_id;
    ELSE IF @p_entity_type='source-control-mappings'
    BEGIN
      -- The Practices - Statement Mapping tree retires
@@ -2048,12 +2338,12 @@ BEGIN
      -- section retires source_control_map rows.  The @p_id in each case comes
      -- from that table's identity, so try each in order and stop as soon as a
      -- row is updated — this keeps overlapping identity ranges safe.
-     UPDATE GRAC_New.framework_statement_requirement_map SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE statement_requirement_map_id=@p_id AND status='Active';
+     UPDATE GRAC_New.framework_statement_requirement_map SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE statement_requirement_map_id=@p_id AND status='Active';
      IF @@ROWCOUNT=0
      BEGIN
-       UPDATE GRAC_New.framework_statement_control_map SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE statement_control_map_id=@p_id AND status='Active';
+       UPDATE GRAC_New.framework_statement_control_map SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE statement_control_map_id=@p_id AND status='Active';
        IF @@ROWCOUNT=0
-         UPDATE GRAC_New.source_control_map SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE source_control_map_id=@p_id;
+         UPDATE GRAC_New.source_control_map SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE source_control_map_id=@p_id;
      END
    END
     ELSE IF @p_entity_type='changes' UPDATE GRAC_New.change_event SET status='Archived',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE change_event_id=@p_id;
@@ -2065,6 +2355,253 @@ BEGIN
     ELSE IF @p_entity_type='menu-management' UPDATE GRAC_New.cm_menu SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE menu_id=@p_id;
     ELSE IF @p_entity_type='role-permissions' UPDATE GRAC_New.cm_role_permission SET status='Inactive',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE role_permission_id=@p_id;
     ELSE THROW 50002,'Retirement is not configured for this repository area',1;
+   -- ---------------------------------------------------------------
+   -- Cascade (048).  Take the subtree down with the parent, and record
+   -- what was taken down so ACTIVATE can put back exactly these rows.
+   -- Descendants that were already inactive are left alone and NOT
+   -- recorded, so re-activating never revives something the user had
+   -- deliberately switched off earlier.
+   -- ---------------------------------------------------------------
+   IF @p_entity_type IN ('authorities','artifacts','releases','source-structure','framework-statements')
+   BEGIN
+     DECLARE @cascade_id UNIQUEIDENTIFIER=NEWID();
+     DECLARE @cascade_scope TABLE(EntityType NVARCHAR(100), RecordId BIGINT, CurrentStatus NVARCHAR(30));
+     -- Anything not already inactive comes down.  Draft counts: a live Draft
+     -- Release under a Retired Artifact is just as wrong as an Active one.
+     -- previous_status is recorded per row, so restore is faithful either way.
+     INSERT @cascade_scope(EntityType,RecordId,CurrentStatus)
+     SELECT EntityType,RecordId,CurrentStatus
+     FROM dbo.fn_cm_repository_descendant_status(@p_entity_type,@p_id)
+     WHERE CurrentStatus NOT IN ('Retired','Inactive','Archived');
+
+     IF EXISTS(SELECT 1 FROM @cascade_scope)
+     BEGIN
+       INSERT GRAC_New.cm_cascade_deactivation(cascade_id,root_entity_type,root_record_id,child_entity_type,child_record_id,previous_status,entered_by)
+       SELECT @cascade_id,@p_entity_type,@p_id,EntityType,RecordId,CurrentStatus,@p_usr_id FROM @cascade_scope;
+
+       UPDATE t SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.artifact t JOIN @cascade_scope c ON c.EntityType=N'artifacts' AND c.RecordId=t.artifact_id;
+
+       UPDATE t SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.release t JOIN @cascade_scope c ON c.EntityType=N'releases' AND c.RecordId=t.release_id;
+
+       UPDATE t SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.source_structure_node t JOIN @cascade_scope c ON c.EntityType=N'source-structure' AND c.RecordId=t.structure_node_id;
+
+       UPDATE t SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.statement_classification t JOIN @cascade_scope c ON c.EntityType=N'statement-classifications' AND c.RecordId=t.statement_classification_id;
+
+       UPDATE t SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.framework_statement t JOIN @cascade_scope c ON c.EntityType=N'framework-statements' AND c.RecordId=t.framework_statement_id;
+
+       UPDATE t SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.source_control_map t JOIN @cascade_scope c ON c.EntityType=N'source-control-map' AND c.RecordId=t.source_control_map_id;
+
+       UPDATE t SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.framework_statement_control_map t JOIN @cascade_scope c ON c.EntityType=N'statement-control-map' AND c.RecordId=t.statement_control_map_id;
+
+       UPDATE t SET status='Retired',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.framework_statement_requirement_map t JOIN @cascade_scope c ON c.EntityType=N'statement-requirement-map' AND c.RecordId=t.statement_requirement_map_id;
+     END
+   END
+ END
+ ELSE IF @p_action='ACTIVATE'
+ BEGIN
+   -- Re-enable a record that was previously marked Inactive / Retired.  This is
+   -- the mirror of the RETIRE branch above and is reached the same way: the
+   -- 3-dots menu offers Activate instead of Inactive once a row is no longer
+   -- Active, and (for the maker-checker areas) the request lands here only
+   -- after a checker has approved the 'Activate' change request.
+   --
+   -- Hierarchy rule: a record cannot be re-activated while an ancestor is still
+   -- inactive, otherwise the grids end up showing an active child hanging off a
+   -- retired parent.  Each guard names the parent so the maker knows exactly
+   -- what to activate first.
+   DECLARE @activated INT=0;
+   IF @p_entity_type='authorities'
+   BEGIN
+     UPDATE GRAC_New.authority SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE authority_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='artifacts'
+   BEGIN
+     IF NOT EXISTS(SELECT 1 FROM GRAC_New.artifact a JOIN GRAC_New.authority au ON au.authority_id=a.authority_id WHERE a.artifact_id=@p_id AND au.status='Active')
+       THROW 50110,'Activate the parent Regulatory Authority first.',1;
+     UPDATE GRAC_New.artifact SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE artifact_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='releases'
+   BEGIN
+     IF NOT EXISTS(SELECT 1 FROM GRAC_New.release r JOIN GRAC_New.artifact a ON a.artifact_id=r.artifact_id WHERE r.release_id=@p_id AND a.status='Active')
+       THROW 50111,'Activate the parent Regulatory Artifact first.',1;
+     UPDATE GRAC_New.release SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE release_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='source-structure'
+   BEGIN
+     IF NOT EXISTS(SELECT 1 FROM GRAC_New.source_structure_node n JOIN GRAC_New.release r ON r.release_id=n.release_id WHERE n.structure_node_id=@p_id AND r.status='Active')
+       THROW 50112,'Activate the parent Artifact Release first.',1;
+     IF EXISTS(SELECT 1 FROM GRAC_New.source_structure_node n JOIN GRAC_New.source_structure_node p ON p.structure_node_id=n.parent_node_id WHERE n.structure_node_id=@p_id AND p.status<>'Active')
+       THROW 50113,'Activate the parent Source Structure node first.',1;
+     UPDATE GRAC_New.source_structure_node SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE structure_node_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='statement-classifications'
+   BEGIN
+     UPDATE GRAC_New.statement_classification SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE statement_classification_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='framework-statements'
+   BEGIN
+     IF NOT EXISTS(SELECT 1 FROM GRAC_New.framework_statement s JOIN GRAC_New.source_structure_node n ON n.structure_node_id=s.structure_node_id WHERE s.framework_statement_id=@p_id AND n.status='Active')
+       THROW 50114,'Activate the parent Source Structure node first.',1;
+     UPDATE GRAC_New.framework_statement SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE framework_statement_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='controls'
+   BEGIN
+     UPDATE GRAC_New.control SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='control-domains'
+   BEGIN
+     UPDATE GRAC_New.control_domain SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_domain_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='control-sub-domains'
+   BEGIN
+     IF NOT EXISTS(SELECT 1 FROM GRAC_New.control_sub_domain s JOIN GRAC_New.control_domain d ON d.control_domain_id=s.control_domain_id WHERE s.control_sub_domain_id=@p_id AND d.status='Active')
+       THROW 50115,'Activate the parent Control Domain first.',1;
+     UPDATE GRAC_New.control_sub_domain SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_sub_domain_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='requirements'
+   BEGIN
+     UPDATE GRAC_New.requirement SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE requirement_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='obligations'
+   BEGIN
+     UPDATE GRAC_New.obligation SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE obligation_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='applicability-rules'
+   BEGIN
+     UPDATE GRAC_New.applicability_rule SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE applicability_rule_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='control-requirement-mappings'
+   BEGIN
+     IF NOT EXISTS(SELECT 1 FROM GRAC_New.control_requirement_map m JOIN GRAC_New.control c ON c.control_id=m.control_id JOIN GRAC_New.requirement r ON r.requirement_id=m.requirement_id WHERE m.control_requirement_map_id=@p_id AND c.status='Active' AND r.status='Active')
+       THROW 50116,'Activate the mapped Control and Practice first.',1;
+     UPDATE GRAC_New.control_requirement_map SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE control_requirement_map_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='source-control-mappings'
+   BEGIN
+     -- Mirrors the RETIRE branch: the same @p_id may belong to any of the three
+     -- mapping tables, so try each in turn and stop at the first hit.  Each is
+     -- guarded so a mapping never comes back active with an inactive end.
+     IF EXISTS(SELECT 1 FROM GRAC_New.framework_statement_requirement_map WHERE statement_requirement_map_id=@p_id AND status<>'Active')
+     BEGIN
+       IF NOT EXISTS(SELECT 1 FROM GRAC_New.framework_statement_requirement_map m JOIN GRAC_New.framework_statement s ON s.framework_statement_id=m.framework_statement_id JOIN GRAC_New.requirement r ON r.requirement_id=m.requirement_id WHERE m.statement_requirement_map_id=@p_id AND s.status='Active' AND r.status='Active')
+         THROW 50117,'Activate the mapped Framework Statement and Practice first.',1;
+       UPDATE GRAC_New.framework_statement_requirement_map SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE statement_requirement_map_id=@p_id;
+       SET @activated=@@ROWCOUNT;
+     END
+     ELSE IF EXISTS(SELECT 1 FROM GRAC_New.framework_statement_control_map WHERE statement_control_map_id=@p_id AND status<>'Active')
+     BEGIN
+       IF NOT EXISTS(SELECT 1 FROM GRAC_New.framework_statement_control_map m JOIN GRAC_New.framework_statement s ON s.framework_statement_id=m.framework_statement_id JOIN GRAC_New.control c ON c.control_id=m.control_id WHERE m.statement_control_map_id=@p_id AND s.status='Active' AND c.status='Active')
+         THROW 50118,'Activate the mapped Framework Statement and Control first.',1;
+       UPDATE GRAC_New.framework_statement_control_map SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE statement_control_map_id=@p_id;
+       SET @activated=@@ROWCOUNT;
+     END
+     ELSE
+     BEGIN
+       IF NOT EXISTS(SELECT 1 FROM GRAC_New.source_control_map m JOIN GRAC_New.source_structure_node n ON n.structure_node_id=m.structure_node_id JOIN GRAC_New.control c ON c.control_id=m.control_id WHERE m.source_control_map_id=@p_id AND n.status='Active' AND c.status='Active')
+         THROW 50119,'Activate the mapped Source Structure node and Control first.',1;
+       UPDATE GRAC_New.source_control_map SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE source_control_map_id=@p_id AND status<>'Active';
+       SET @activated=@@ROWCOUNT;
+     END
+   END
+   ELSE IF @p_entity_type='approval-workflow'
+   BEGIN
+     UPDATE GRAC_New.approval_workflow_config SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE workflow_config_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='user-management'
+   BEGIN
+     UPDATE GRAC_New.cm_user SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE user_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='role-management'
+   BEGIN
+     UPDATE GRAC_New.cm_role SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE role_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='menu-management'
+   BEGIN
+     UPDATE GRAC_New.cm_menu SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE menu_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE IF @p_entity_type='role-permissions'
+   BEGIN
+     UPDATE GRAC_New.cm_role_permission SET status='Active',updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME() WHERE role_permission_id=@p_id AND status<>'Active';
+     SET @activated=@@ROWCOUNT;
+   END
+   ELSE THROW 50120,'Activation is not configured for this repository area',1;
+   IF @activated=0 THROW 50121,'This record is already Active.',1;
+   -- ---------------------------------------------------------------
+   -- Restore (048).  Put back exactly the rows this record's most recent
+   -- cascade took down -- nothing that was already inactive beforehand,
+   -- and nothing deactivated by a different event.  Each child returns to
+   -- the status it held before the cascade ran.
+   -- ---------------------------------------------------------------
+   IF @p_entity_type IN ('authorities','artifacts','releases','source-structure','framework-statements')
+   BEGIN
+     DECLARE @restore_cascade_id UNIQUEIDENTIFIER=
+       (SELECT TOP 1 cascade_id FROM GRAC_New.cm_cascade_deactivation
+        WHERE root_entity_type=@p_entity_type AND root_record_id=@p_id AND restored_dt IS NULL
+        ORDER BY cascade_row_id DESC);
+     IF @restore_cascade_id IS NOT NULL
+     BEGIN
+       UPDATE t SET status=c.previous_status,updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.artifact t JOIN GRAC_New.cm_cascade_deactivation c
+         ON c.cascade_id=@restore_cascade_id AND c.restored_dt IS NULL AND c.child_entity_type=N'artifacts' AND c.child_record_id=t.artifact_id;
+
+       UPDATE t SET status=c.previous_status,updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.release t JOIN GRAC_New.cm_cascade_deactivation c
+         ON c.cascade_id=@restore_cascade_id AND c.restored_dt IS NULL AND c.child_entity_type=N'releases' AND c.child_record_id=t.release_id;
+
+       UPDATE t SET status=c.previous_status,updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.source_structure_node t JOIN GRAC_New.cm_cascade_deactivation c
+         ON c.cascade_id=@restore_cascade_id AND c.restored_dt IS NULL AND c.child_entity_type=N'source-structure' AND c.child_record_id=t.structure_node_id;
+
+       UPDATE t SET status=c.previous_status,updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.statement_classification t JOIN GRAC_New.cm_cascade_deactivation c
+         ON c.cascade_id=@restore_cascade_id AND c.restored_dt IS NULL AND c.child_entity_type=N'statement-classifications' AND c.child_record_id=t.statement_classification_id;
+
+       UPDATE t SET status=c.previous_status,updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.framework_statement t JOIN GRAC_New.cm_cascade_deactivation c
+         ON c.cascade_id=@restore_cascade_id AND c.restored_dt IS NULL AND c.child_entity_type=N'framework-statements' AND c.child_record_id=t.framework_statement_id;
+
+       UPDATE t SET status=c.previous_status,updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.source_control_map t JOIN GRAC_New.cm_cascade_deactivation c
+         ON c.cascade_id=@restore_cascade_id AND c.restored_dt IS NULL AND c.child_entity_type=N'source-control-map' AND c.child_record_id=t.source_control_map_id;
+
+       UPDATE t SET status=c.previous_status,updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.framework_statement_control_map t JOIN GRAC_New.cm_cascade_deactivation c
+         ON c.cascade_id=@restore_cascade_id AND c.restored_dt IS NULL AND c.child_entity_type=N'statement-control-map' AND c.child_record_id=t.statement_control_map_id;
+
+       UPDATE t SET status=c.previous_status,updated_by=@p_usr_id,updated_dt=SYSUTCDATETIME()
+       FROM GRAC_New.framework_statement_requirement_map t JOIN GRAC_New.cm_cascade_deactivation c
+         ON c.cascade_id=@restore_cascade_id AND c.restored_dt IS NULL AND c.child_entity_type=N'statement-requirement-map' AND c.child_record_id=t.statement_requirement_map_id;
+
+       UPDATE GRAC_New.cm_cascade_deactivation
+       SET restored_dt=SYSUTCDATETIME(), restored_by=@p_usr_id
+       WHERE cascade_id=@restore_cascade_id AND restored_dt IS NULL;
+     END
+   END
  END
  ELSE IF @p_entity_type='authorities'
  BEGIN
@@ -2313,7 +2850,11 @@ END
            statement_reference=@statement_reference,
            statement_title=JSON_VALUE(@p_payload,'$.statementTitle'),
            statement_text=JSON_VALUE(@p_payload,'$.statementText'),
-           statement_type=JSON_VALUE(@p_payload,'$.statementType'),
+           -- Statement Type was removed from the Source Statement form (it was
+           -- free text nothing read back).  The column and any bulk-uploaded
+           -- values stay, so preserve what is stored when the payload omits the
+           -- key instead of nulling it on every edit.
+           statement_type=COALESCE(JSON_VALUE(@p_payload,'$.statementType'),statement_type),
            remarks=JSON_VALUE(@p_payload,'$.remarks'),
            status=COALESCE(JSON_VALUE(@p_payload,'$.status'),status),
            updated_by=@p_usr_id,

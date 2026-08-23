@@ -1,11 +1,23 @@
 @using ControlManagement.Web.Models
+@using ControlManagement.Security
+@using ControlManagement.Web.Security
 @inject Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery
+@inject PermissionPolicy PermissionPolicy
 @{
     var screens = ViewBag.Screens as RepositoryScreen[] ?? RepositoryScreen.All;
     var menuItems = ViewBag.MenuItems as IReadOnlyList<ControlMenuItem> ?? [];
     var currentArea = (ViewBag.CurrentArea as string) ?? Context.Request.Query["areaKey"].ToString();
     if (string.IsNullOrWhiteSpace(currentArea)) currentArea = ViewContext.RouteData.Values["areaKey"]?.ToString() ?? "";
     var isDashboard = string.IsNullOrWhiteSpace(currentArea) && ViewContext.RouteData.Values["action"]?.ToString() != "AuditTrace";
+    // Bulk-upload menu entry: visible only to users who hold ADD on every gated
+    // repository area (effectively CM_ADMIN today).
+    var bulkUploadAreas = new[] { "authorities", "artifacts", "releases", "source-structure", "framework-statements", "requirements", "obligations", "source-control-mappings", "obligation-mappings" };
+    var singleFormAreas = new[] { "source-structure", "framework-statements", "requirements", "obligations", "source-control-mappings", "obligation-mappings" };
+    var sessionRoles = (Context.Session.GetString(SessionIdentity.RolesKey) ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries);
+    var canBulkUpload = sessionRoles.Length > 0 && bulkUploadAreas.All(a => PermissionPolicy.IsAllowed(sessionRoles, a, "ADD"));
+    var canSingleFormUpload = sessionRoles.Length > 0 && singleFormAreas.Any(a => PermissionPolicy.IsAllowed(sessionRoles, a, "ADD"));
+    var isBulkUploadArea = string.Equals(currentArea, "bulk-upload", StringComparison.OrdinalIgnoreCase);
+    var isSingleFormUploadArea = string.Equals(currentArea, "single-form-upload", StringComparison.OrdinalIgnoreCase);
 }
 <!DOCTYPE html>
 <html lang="en">
@@ -30,6 +42,8 @@
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/grac-dialog.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/control-management.css" asp-append-version="true" />
+    @* Project-wide grid standard: fixed-height body + bottom pagination. *@
+    <link rel="stylesheet" href="~/css/grac-grid.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/topbar-auth.css" asp-append-version="true" />
     <script>
         (function () {
@@ -105,6 +119,22 @@
                     {
                         @await Html.PartialAsync("_ControlMenuTree", menuItems, new ViewDataDictionary(ViewData) { ["CurrentArea"] = currentArea })
                     }
+                    @if (canBulkUpload)
+                    {
+                        <li class="nav-item">
+                            <a href="@(Context.Request.PathBase)/Repository/BulkUpload" class="nav-link @(isBulkUploadArea ? "active" : "")">
+                                <i class="nav-icon fas fa-file-import"></i><p>Bulk Upload (Workbook)</p>
+                            </a>
+                        </li>
+                    }
+                    @if (canSingleFormUpload)
+                    {
+                        <li class="nav-item">
+                            <a href="@(Context.Request.PathBase)/Repository/SingleFormUpload" class="nav-link @(isSingleFormUploadArea ? "active" : "")">
+                                <i class="nav-icon fas fa-file-excel"></i><p>Single-Form Upload</p>
+                            </a>
+                        </li>
+                    }
                 </ul>
             </nav>
         </div>
@@ -129,6 +159,7 @@
     <script src="~/lib/FrontEnd/plugins/datatables-bs4/js/dataTables.bootstrap4.min.js"></script>
     <script src="~/lib/FrontEnd/plugins/datatables-buttons/js/dataTables.buttons.min.js"></script>
     <script src="~/js/grac-dialog.js" asp-append-version="true"></script>
+    <script src="~/js/grac-pager.js" asp-append-version="true"></script>
     <script src="~/js/site.js" asp-append-version="true"></script>
     <script>
         window.cmPathBase = "@Context.Request.PathBase";

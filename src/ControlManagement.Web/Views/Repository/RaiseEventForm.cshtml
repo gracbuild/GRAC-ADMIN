@@ -1,0 +1,97 @@
+@{
+    ViewData["Title"] = "Raise Event";
+    var permissions = ViewBag.Permissions as string[] ?? [];
+}
+<link rel="stylesheet" href="~/css/repository-actions.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/obligation-mapping-form.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/obligation-master-form.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/event-checklist-form.css" asp-append-version="true" />
+
+<div class="page-heading om-page-heading">
+    <div>
+        <p class="eyebrow">Repository Management / Event Checklists</p>
+        <h1>Raise Event</h1>
+    </div>
+</div>
+
+<div id="revMessage" class="form-message" hidden></div>
+
+<form id="raiseEventForm" class="om-form-page">
+    <section class="om-card om-card-compact">
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2>Event</h2>
+                <p>Recording an event generates a checklist of every assurance configured for it.</p>
+            </div>
+        </div>
+
+        <div class="omf-grid">
+            <div class="form-field omf-span-4">
+                <span class="form-field-label">Event Domain <span class="required">*</span></span>
+                <select id="rev-domain" required></select>
+            </div>
+            <div class="form-field omf-span-4">
+                <span class="form-field-label">Event <span class="required">*</span></span>
+                <select id="rev-event" required disabled>
+                    <option value="">-- Select a domain first --</option>
+                </select>
+            </div>
+            <div class="form-field omf-span-4">
+                <span class="form-field-label">Occurred On</span>
+                <input type="date" id="rev-occurred" />
+                <span class="form-field-hint">Defaults to today.</span>
+            </div>
+
+            <div class="form-field omf-span-8">
+                <span class="form-field-label">Subject <span class="required">*</span></span>
+                <select id="rev-subject" required disabled>
+                    <option value="">-- Select an event first --</option>
+                </select>
+                <span class="form-field-hint" id="rev-subject-hint">
+                    Who or what this event happened to.
+                </span>
+            </div>
+            <div class="form-field omf-span-12">
+                <span class="form-field-label">Remarks</span>
+                <textarea id="rev-remarks" rows="2"></textarea>
+            </div>
+        </div>
+    </section>
+
+    @* Preview of what raising will generate.  Shown once an event is chosen so
+       the operator can see whether anything is configured before committing. *@
+    <section class="om-card om-card-compact" id="rev-preview-card" hidden>
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2>Checklist Preview</h2>
+                <p id="rev-preview-sub">Assurances that will be raised for this event.</p>
+            </div>
+        </div>
+        <div id="rev-preview"></div>
+    </section>
+</form>
+
+<div class="om-action-bar">
+    <div class="om-action-bar-inner">
+        <button type="button" class="button" id="revCancel">
+            <i class="fa-solid fa-arrow-left"></i> Cancel
+        </button>
+        @if (permissions.Contains("ADD"))
+        {
+            <button type="button" class="button primary" id="revSave" disabled>
+                <i class="fa-solid fa-clipboard-check"></i> Raise Event
+            </button>
+        }
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        window.cmRaiseEvent = {
+            api: "@ViewBag.ApiBaseUrl",
+            returnUrl: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewBag.ReturnUrl as string ?? "")),
+            permissions: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(permissions))
+        };
+    </script>
+    <script src="~/js/raise-event-form.js" asp-append-version="true"></script>
+}

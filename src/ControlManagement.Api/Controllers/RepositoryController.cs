@@ -31,7 +31,75 @@ public sealed class RepositoryController(
         "control-domains", "control-sub-domains", "control-similar", "control-tree",
         "control-requirement-mappings", "source-control-mappings", "framework-statement-requirement-mappings", "applicability-rules",
         "user-management", "role-management", "menu-management", "role-permissions",
-        "changes", "impact-analysis", "notifications", "change-management", "approval-workflow", "audit-trace", "lookups"
+        "changes", "impact-analysis", "notifications", "change-management", "approval-workflow", "audit-trace", "lookups",
+        // Assurance Management (Phase 1 - Admin / Authority Control Module).
+        "assurance-categories", "assurance-scoring-models", "assurance-severity",
+        "assurance-gap-categories", "assurance-workflow-templates", "assurance-question-types",
+        "assurance-sampling-models", "assurance-frequency-types", "assurance-report-templates",
+        "assurance-starter-templates", "assurance-version-history", "assurance-lookups",
+        // Obligation Taxonomy (Phase 2B - 7-type atomic taxonomy).  These
+        // route to cm_get_obligation_taxonomy / cm_manage_obligation_taxonomy
+        // and piggy-back on the 'obligations' permission area for RBAC.
+        "obligation-types", "obligation-type-assignment", "obligation-state", "obligation-execution",
+        "obligation-assurance", "obligation-event-response", "obligation-constraint",
+        "obligation-retention", "obligation-evidence-links",
+        // Obligation Composite (Phase 2) - the merged Master + Type + Typed
+        // Detail + Evidence Links save.  SAVE only; routes to
+        // cm_manage_obligation_composite.
+        "obligation-composite",
+        // Event-driven assurance (033) - event taxonomy read for the Assurance
+        // trigger cascade.  Read-only.
+        "event-types",
+        // Obligation Source Statement mapping (056).  Read-only: the WRITE
+        // travels inside the obligation master payload as $.sourceStatements,
+        // so there is no manage entity type to support here.
+        "obligation-statement-mappings", "obligation-statement-releases",
+        // Event-driven assurance runtime (035/036).  Occurrences and the
+        // checklists they generate.  Direct write - these entities are
+        // registered with is_maker_checker = 0 on purpose.
+        "assurance-occurrences", "assurance-checklist", "event-subjects",
+        // SLA Master (043) - process / classification SLA definitions that
+        // drive breach warnings and escalations across the assurance runtime.
+        // Manage view + form live under Repository/Index?areaKey=sla-master
+        // and Repository/SlaMaster.
+        "sla-master"
+    };
+
+    // Obligation taxonomy entity types alias to the 'obligations' permission
+    // area so admins do not have to grant per-type VIEW / EDIT permissions.
+    // A user who can VIEW / EDIT Obligations can author typed detail rows.
+    private static readonly HashSet<string> ObligationTaxonomyPermissionAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "obligation-types", "obligation-type-assignment", "obligation-state", "obligation-execution",
+        "obligation-assurance", "obligation-event-response", "obligation-constraint",
+        "obligation-retention", "obligation-evidence-links",
+        "obligation-composite", "event-types",
+        // Source Statement mapping reads (056).  'obligation-statement-mappings'
+        // feeds the tree on the Obligation Master form; the page already
+        // requires VIEW on Obligations to open at all.
+        // 'obligation-statement-releases' is read by Practices - Obligation
+        // Mapping, which likewise already reads 'obligations' for its inline
+        // preview -- so neither read widens what a user can see.
+        "obligation-statement-mappings", "obligation-statement-releases"
+    };
+
+    // Event-driven assurance runtime (035/036).  These do NOT alias to
+    // 'obligations' -- Event Checklists is its own screen with its own menu
+    // row and role permissions (granted by migration 035).  The checklist and
+    // subject-picker reads are sub-reads of that screen, so they share its
+    // permission area rather than carrying one each.
+    private static readonly HashSet<string> AssuranceRuntimePermissionAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "assurance-checklist", "event-subjects"
+    };
+
+    // Lifecycle-only actions that map to the required permission on the assurance
+    // masters.  APPROVE / REJECT are already handled by the shared branch below.
+    private static readonly Dictionary<string, string> LifecycleActionPermissions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["SUBMIT"]          = "EDIT",
+        ["PUBLISH"]         = "APPROVE",
+        ["RETIRE_PUBLISHED"]= "APPROVE"
     };
 
     [HttpGet]
@@ -88,7 +156,14 @@ public sealed class RepositoryController(
                 ? "APPROVE"
                 : request.Action.Equals("REJECT", StringComparison.OrdinalIgnoreCase) || request.Action.Equals("SEND_BACK", StringComparison.OrdinalIgnoreCase)
                     ? "REJECT"
-                : request.Action.Equals("RETIRE", StringComparison.OrdinalIgnoreCase) ? "DELETE"
+                // ACTIVATE is the mirror of RETIRE and shares its permission:
+                // whoever may deactivate a record may bring it back.  The
+                // RETIRE_IMPACT preview reads what RETIRE would change, so it
+                // is gated the same way.
+                : request.Action.Equals("RETIRE", StringComparison.OrdinalIgnoreCase)
+                  || request.Action.Equals("ACTIVATE", StringComparison.OrdinalIgnoreCase)
+                  || request.Action.Equals("RETIRE_IMPACT", StringComparison.OrdinalIgnoreCase) ? "DELETE"
+                : LifecycleActionPermissions.TryGetValue(request.Action, out var mapped) ? mapped
                 : request.Id.GetValueOrDefault() > 0 ? "EDIT" : "ADD";
             if (!permissionPolicy.IsAllowed(principal.Roles, request.EntityType, action))
                 return new RepositoryResult(false, "You do not have permission to perform this action.");
@@ -106,16 +181,21 @@ public sealed class RepositoryController(
                 data = InjectDefaultUserPassword(data);
 
             // Maker-checker auto-approval: the SP runs the workflow gate and will
-            // auto-approve a SAVE/RETIRE only when it sees __autoApproveAllowed=1
+            // auto-approve a SAVE/RETIRE/ACTIVATE only when it sees __autoApproveAllowed=1
             // AND the workflow row has self_approval_allowed=1.  The API has the
             // role-to-permission map, so we tell the SP whether *this* maker also
             // holds APPROVE on the area; the SP keeps the final say because it
             // owns the workflow config.
             var managePermissionArea = request.EntityType.Equals("framework-statement-requirement-mappings", StringComparison.OrdinalIgnoreCase)
                 ? "requirements"
-                : request.EntityType;
+                : ObligationTaxonomyPermissionAliases.Contains(request.EntityType)
+                    ? "obligations"
+                    : AssuranceRuntimePermissionAliases.Contains(request.EntityType)
+                        ? "assurance-occurrences"
+                        : request.EntityType;
             if ((request.Action.Equals("SAVE", StringComparison.OrdinalIgnoreCase)
-                  || request.Action.Equals("RETIRE", StringComparison.OrdinalIgnoreCase))
+                  || request.Action.Equals("RETIRE", StringComparison.OrdinalIgnoreCase)
+                  || request.Action.Equals("ACTIVATE", StringComparison.OrdinalIgnoreCase))
                 && permissionPolicy.IsAllowed(principal.Roles, managePermissionArea, "APPROVE"))
             {
                 data = InjectAutoApproveFlag(data);
@@ -159,13 +239,19 @@ public sealed class RepositoryController(
             // the master area's VIEW permission (a user who can view Obligations
             // may also see potential duplicates).  Same treatment as the legacy
             // framework-statement-requirement-mappings alias.
+            // Obligation taxonomy typed entities (obligation-state, ...) share
+            // the 'obligations' permission area so admins do not have to grant
+            // per-type permissions -- edit rights on Obligations imply typed
+            // detail rights.
             var permissionArea = request.EntityType.Equals("framework-statement-requirement-mappings", StringComparison.OrdinalIgnoreCase)
                 ? "requirements"
                 : request.EntityType.Equals("obligations-similar", StringComparison.OrdinalIgnoreCase)
                     ? "obligations"
                     : request.EntityType.Equals("requirements-similar", StringComparison.OrdinalIgnoreCase)
                         ? "requirements"
-                        : request.EntityType;
+                        : ObligationTaxonomyPermissionAliases.Contains(request.EntityType)
+                            ? "obligations"
+                            : request.EntityType;
             if (requiredAction is not null && !permissionPolicy.IsAllowed(principal.Roles, permissionArea, requiredAction))
                 return StatusCode(StatusCodes.Status403Forbidden,
                     crypto.EncryptResponse("FAIL", JsonSerializer.Serialize(new RepositoryResult(false, "You do not have permission to access this area.")), token));

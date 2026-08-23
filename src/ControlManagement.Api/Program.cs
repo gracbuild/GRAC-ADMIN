@@ -22,6 +22,8 @@ builder.Services.AddCors(options =>
     });
 });
 builder.Services.AddScoped<IRegulatoryRepositoryService, RegulatoryRepositoryService>();
+builder.Services.AddScoped<IBulkUploadService, BulkUploadService>();
+builder.Services.AddScoped<ISingleFormUploadService, SingleFormUploadService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<RepositoryCommandValidator>();
 builder.Services.AddMemoryCache();

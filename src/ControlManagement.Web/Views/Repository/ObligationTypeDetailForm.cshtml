@@ -1,0 +1,123 @@
+@{
+    var mode = (ViewBag.Mode as string ?? "edit").ToLowerInvariant();
+    var readonlyMode = mode == "view";
+    ViewData["Title"] = readonlyMode ? "View Obligation Type Details" : "Manage Obligation Type Details";
+    var permissions = ViewBag.Permissions as string[] ?? [];
+}
+<link rel="stylesheet" href="~/css/repository-actions.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/obligation-mapping-form.css" asp-append-version="true" />
+
+<div class="page-heading om-page-heading">
+    <div>
+        <p class="eyebrow">Repository Management / Obligation Type Details</p>
+        <h1 id="otdPageTitle">@ViewData["Title"]</h1>
+        <p class="page-subtitle">Classify an obligation as one of the seven atomic types and author its typed detail (State rule, Execution spec, etc.), plus attach one or more evidence specs.</p>
+    </div>
+</div>
+
+<div id="otdMessage" class="form-message" hidden></div>
+
+<form id="obligationTypeDetailForm" class="om-form-page">
+    <section class="om-card om-card-compact">
+        <div class="om-form-grid om-form-grid-compact">
+            <div class="form-field">
+                <span class="form-field-label">Obligation <span class="required">*</span></span>
+                <select id="otd-obligation" name="obligationId" @(readonlyMode ? "disabled" : "") required></select>
+            </div>
+            <div class="form-field">
+                <span class="form-field-label">Obligation Type <span class="required">*</span></span>
+                <select id="otd-type" name="obligationTypeCode" @(readonlyMode ? "disabled" : "") required>
+                    <option value="">-- Select Type --</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-actions" style="margin-top: 0.75rem;">
+            <button type="button" class="button" id="otdAssignType" @(readonlyMode ? "disabled" : "")>
+                <i class="fa-solid fa-tag"></i> Assign / Change Type
+            </button>
+            <span id="otd-current-type-label" class="text-muted"></span>
+        </div>
+    </section>
+
+    <!-- Dynamic typed-detail form.  Only one section is visible at a time,
+         chosen from the Type dropdown.  All fields carry the same wrapper
+         and status/remarks pair to keep UX consistent across the six types. -->
+    <section class="om-card om-card-matrix" id="otd-detail-card" hidden>
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2 id="otd-detail-heading">Typed Detail</h2>
+                <p id="otd-detail-subheading">Fill in the fields specific to this obligation type.</p>
+            </div>
+        </div>
+        <div class="om-form-grid" id="otd-detail-fields">
+            <!-- Fields injected by JS based on selected type. -->
+        </div>
+        @* Save Detail moved to the bottom action bar with Back. *@
+    </section>
+
+    <!-- Evidence links section: M:M attach picker + list.
+         For type='Evidence' this section is hidden -- standalone Evidence
+         obligations use the classic requirement_obligation_evidence flow. -->
+    <section class="om-card om-card-matrix" id="otd-evidence-card" hidden>
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2>Evidence Attachments</h2>
+                <p>Attach one or more evidence specs.  The same spec can be reused across obligations.</p>
+            </div>
+        </div>
+        <div class="om-form-grid">
+            <div class="form-field">
+                <span class="form-field-label">Evidence Spec</span>
+                <select id="otd-evidence-spec"></select>
+            </div>
+            <div class="form-field">
+                <span class="form-field-label">Remarks (optional)</span>
+                <input type="text" id="otd-evidence-remarks" maxlength="500" @(readonlyMode ? "disabled" : "") />
+            </div>
+        </div>
+        <div class="form-actions" style="margin-top: 0.5rem;">
+            <button type="button" class="button" id="otdAttachEvidence" @(readonlyMode ? "disabled" : "")>
+                <i class="fa-solid fa-link"></i> Attach Evidence
+            </button>
+        </div>
+        <div class="om-table-wrap" style="margin-top: 1rem;">
+            <table class="om-table">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Evidence Type</th>
+                        <th>Frequency</th>
+                        <th>Retention</th>
+                        <th>Remarks</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="otd-evidence-body">
+                    <tr><td colspan="6" class="empty">No evidence attached yet.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</form>
+
+<div class="om-action-bar">
+    <div class="om-action-bar-inner">
+        <button type="button" class="button" id="otdCancel"><i class="fa-solid fa-arrow-left"></i> Back</button>
+        <button type="button" class="button primary" id="otdSaveDetail" @(readonlyMode ? "disabled" : "")>
+            <i class="fa-solid fa-save"></i> Save Detail
+        </button>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        window.cmObligationTypeDetailForm = {
+            api: "@ViewBag.ApiBaseUrl",
+            mode: "@mode",
+            obligationId: @((int)ViewBag.ObligationId),
+            returnUrl: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewBag.ReturnUrl as string ?? "")),
+            permissions: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(permissions))
+        };
+    </script>
+    <script src="~/js/obligation-type-detail-form.js" asp-append-version="true"></script>
+}

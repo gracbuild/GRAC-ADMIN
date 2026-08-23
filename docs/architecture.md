@@ -54,3 +54,43 @@ POST /api/control-management/secure/manage
 ```
 
 The repository facade supports reads, form lookups, create/update operations, approvals, status-based retirement, and bulk mapping inserts for the requested areas. Main-platform integration can replace the standalone authentication adapter and synchronize enterprise directory roles without changing the repository model.
+
+## Obligation Taxonomy (7-type atomic model)
+
+Obligations carry a discriminator `obligation_type_id` on `GRAC_New.requirement_obligation` (FK to `GRAC_New.obligation_type_master`) that classifies each obligation as one of seven atomic types:
+
+| type_code       | meaning                                                       |
+| --------------- | ------------------------------------------------------------- |
+| `State`         | what must be / continue to be true (e.g. password length ≥ 12) |
+| `Execution`     | what must be done and when                                    |
+| `Assurance`     | what must be verified and how                                 |
+| `EventResponse` | if X occurs, what must happen within SLA                      |
+| `Constraint`    | what boundary or prohibition must never be violated           |
+| `Evidence`      | what proves fulfilment (standalone evidence obligation)       |
+| `Retention`     | what must be preserved and for how long                       |
+
+Each non-Evidence type has a dedicated detail table (`obligation_state_rule`, `obligation_execution_spec`, `obligation_assurance_spec`, `obligation_event_response`, `obligation_constraint_rule`, `obligation_retention_spec`) with a 1:1 active row per obligation. Evidence spec storage stays in the existing `requirement_obligation_evidence` table; six per-type M:M link tables (`obligation_<type>_evidence_link`) allow any obligation to attach one or more reusable evidence specs.
+
+### API entry points for typed detail
+
+Typed detail flows through the same `secure/query` and `secure/manage` envelopes as everything else, routed by `EntityType`:
+
+| EntityType                    | Query dispatcher                       | Manage dispatcher                        | Actions                    |
+| ----------------------------- | -------------------------------------- | ---------------------------------------- | -------------------------- |
+| `obligation-types`            | `dbo.cm_get_obligation_taxonomy`       | (no manage; use `obligation-type-assignment`) | -                     |
+| `obligation-type-assignment`  | -                                      | `dbo.cm_manage_obligation_taxonomy`      | `ASSIGN_TYPE`              |
+| `obligation-state`            | `dbo.cm_get_obligation_taxonomy`       | `dbo.cm_manage_obligation_taxonomy`      | `SAVE`                     |
+| `obligation-execution`        | `dbo.cm_get_obligation_taxonomy`       | `dbo.cm_manage_obligation_taxonomy`      | `SAVE`                     |
+| `obligation-assurance`        | `dbo.cm_get_obligation_taxonomy`       | `dbo.cm_manage_obligation_taxonomy`      | `SAVE`                     |
+| `obligation-event-response`   | `dbo.cm_get_obligation_taxonomy`       | `dbo.cm_manage_obligation_taxonomy`      | `SAVE`                     |
+| `obligation-constraint`       | `dbo.cm_get_obligation_taxonomy`       | `dbo.cm_manage_obligation_taxonomy`      | `SAVE`                     |
+| `obligation-retention`        | `dbo.cm_get_obligation_taxonomy`       | `dbo.cm_manage_obligation_taxonomy`      | `SAVE`                     |
+| `obligation-evidence-links`   | `dbo.cm_get_obligation_taxonomy`       | `dbo.cm_manage_obligation_taxonomy`      | `SAVE`/`ATTACH`, `DETACH`/`RETIRE`/`DELETE` |
+
+The legacy Obligation Master entities (`obligations`, `obligation-mappings`, `obligation-mapping-matrix`, `obligation-mapping-bulk`, `obligation-evidence`, `obligations-similar`) continue to route through `cm_get_repository` / `cm_manage_repository` unchanged.
+
+**RBAC:** All typed entity types alias to the `obligations` permission area (View/Add/Edit/Approve on Obligations grants access to typed detail). Admins do not have to grant per-type permissions.
+
+**Payload contract:** SAVE and ASSIGN_TYPE both send `{ obligationId, ...typedFields }` in the encrypted envelope `Data` field. For GET the front-end passes the parent obligation id via the top-level `Id` field (falls back to `$.obligationId` in payload). See `database/029_obligation_taxonomy_dispatcher.sql` for per-type field lists.
+
+**Maker-checker:** Typed detail writes bypass the change-management workflow that guards the Obligation Master. If sir wants approval on typed edits, that is a follow-on migration.

@@ -1,0 +1,65 @@
+@{
+    ViewData["Title"] = "Event Checklist";
+    var permissions = ViewBag.Permissions as string[] ?? [];
+    var canEdit = permissions.Contains("EDIT") || permissions.Contains("ADD");
+}
+<link rel="stylesheet" href="~/css/repository-actions.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/obligation-mapping-form.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/obligation-master-form.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/event-checklist-form.css" asp-append-version="true" />
+
+<div class="page-heading om-page-heading">
+    <div>
+        <p class="eyebrow">Repository Management / Event Checklists</p>
+        <h1 id="eclPageTitle">Event Checklist</h1>
+    </div>
+</div>
+
+<div id="eclMessage" class="form-message" hidden></div>
+
+<div class="om-form-page">
+
+    @* Context header: which event, for whom, and how far along.  Rendered by
+       JS from the occurrence row so the page has a single source of truth. *@
+    <section class="om-card om-card-compact">
+        <div class="ecl-summary" id="ecl-summary">
+            <div class="ecl-summary-loading">Loading checklist...</div>
+        </div>
+    </section>
+
+    @* One card per assurance.  The verification method shown is the SNAPSHOT
+       taken when the event was raised -- editing the obligation afterwards
+       must not change what this checklist recorded. *@
+    <section class="om-card om-card-matrix">
+        <div class="om-card-heading om-card-heading-tight">
+            <div>
+                <h2>Assurance Items</h2>
+                <p>Record a result against each item. Remarks are required when the result is Fail.</p>
+            </div>
+        </div>
+        <div id="ecl-items">
+            <div class="ecl-empty">Loading...</div>
+        </div>
+    </section>
+</div>
+
+<div class="om-action-bar">
+    <div class="om-action-bar-inner">
+        <button type="button" class="button" id="eclBack">
+            <i class="fa-solid fa-arrow-left"></i> Back to Event Checklists
+        </button>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        window.cmEventChecklist = {
+            api: "@ViewBag.ApiBaseUrl",
+            occurrenceId: @((int)ViewBag.OccurrenceId),
+            canEdit: @(canEdit ? "true" : "false"),
+            returnUrl: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewBag.ReturnUrl as string ?? "")),
+            permissions: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(permissions))
+        };
+    </script>
+    <script src="~/js/event-checklist-form.js" asp-append-version="true"></script>
+}
