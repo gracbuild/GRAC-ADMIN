@@ -103,6 +103,16 @@ public sealed class RegulatoryRepositoryService(IConfiguration configuration, IL
         "sla-master"
     };
 
+    // Time Zone Master (058/059) - standardized IANA time zones shared
+    // across every GRAC module. Same split as SLA Master: dedicated
+    // dispatcher (cm_get_time_zone_master / cm_manage_time_zone_master) so
+    // cm_get_repository / cm_manage_repository stay untouched. No
+    // maker-checker lifecycle - Active <-> Inactive only.
+    private static readonly HashSet<string> TimeZoneMasterEntities = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "time-zone-master"
+    };
+
     // Obligation Source Statement mapping (056) -- which Framework Statements
     // an obligation is written against.  Routed to its own read procedure
     // dbo.cm_get_obligation_statement_map so the 1100-line cm_get_repository
@@ -132,7 +142,9 @@ public sealed class RegulatoryRepositoryService(IConfiguration configuration, IL
                         ? "dbo.cm_get_assurance_repository"
                         : IsSlaMaster(request.EntityType)
                             ? "dbo.cm_get_sla_master"
-                            : "dbo.cm_get_repository";
+                            : IsTimeZoneMaster(request.EntityType)
+                                ? "dbo.cm_get_time_zone_master"
+                                : "dbo.cm_get_repository";
         var payload = JsonSerializer.Serialize(new
         {
             request.AuthorityId,
@@ -171,7 +183,9 @@ public sealed class RegulatoryRepositoryService(IConfiguration configuration, IL
                         ? "dbo.cm_manage_assurance_repository"
                         : IsSlaMaster(request.EntityType)
                             ? "dbo.cm_manage_sla_master"
-                            : "dbo.cm_manage_repository";
+                            : IsTimeZoneMaster(request.EntityType)
+                                ? "dbo.cm_manage_time_zone_master"
+                                : "dbo.cm_manage_repository";
         return ExecuteAsync(procedure, request.EntityType, request.Action, request.Id, "", "",
             request.Data.GetRawText(), request.EnteredBy, null, null, cancellationToken);
     }
@@ -190,6 +204,9 @@ public sealed class RegulatoryRepositoryService(IConfiguration configuration, IL
 
     private static bool IsSlaMaster(string entityType) =>
         SlaMasterEntities.Contains(entityType);
+
+    private static bool IsTimeZoneMaster(string entityType) =>
+        TimeZoneMasterEntities.Contains(entityType);
 
     private static bool IsObligationStatementMap(string entityType) =>
         ObligationStatementMapEntities.Contains(entityType);

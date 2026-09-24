@@ -53,6 +53,13 @@ public sealed record RepositoryScreen(string Key, string Title, string Descripti
         new("assurance-frequency-types","Frequency Types","Reusable execution frequencies","calendar-days",["Code","Name","IntervalDays","Version","LifecycleStatus","Status"]),
         new("assurance-report-templates","Report Templates","Reusable report templates","file-lines",["Code","Name","ReportScope","Version","LifecycleStatus","Status"]),
         new("assurance-starter-templates","Starter Assurance Templates","Ready-to-subscribe starter templates that bundle assurance metadata","copy",["Code","Name","Category","ScoringModel","WorkflowTemplate","Version","LifecycleStatus","Status"]),
-        new("assurance-version-history","Version History","Immutable lifecycle audit trail of every assurance metadata item","clock-rotate-left",["EntityType","EntityId","Version","LifecycleStatus","ActionCode","EnteredBy","EnteredDt"])
+        new("assurance-version-history","Version History","Immutable lifecycle audit trail of every assurance metadata item","clock-rotate-left",["EntityType","EntityId","Version","LifecycleStatus","ActionCode","EnteredBy","EnteredDt"]),
+        // Time Zone Master (058/059) -- standardized IANA time zones shared
+        // across every GRAC module. Global reference data, not owned by any
+        // one organisation, which is why it lives here (Security
+        // Administration) rather than in PracticeManagement: that module
+        // only references GRAC_New.time_zone_master to feed a Location's
+        // Time Zone dropdown, it does not manage the master itself.
+        new("time-zone-master","Time Zone Master","Standardized IANA time zones referenced by Location and other GRAC modules","clock",["TimeZoneName","IanaTimeZone","UtcOffset","Status"])
     ];
 }

@@ -162,7 +162,14 @@
     // SLA Master (043).  Not rendered by the generic modal -- openForm() redirects
     // to /Repository/SlaMaster.  Kept here as a fallback in case the redirect
     // path ever misses a mode, so the modal shows fields instead of a blank pane.
-    "sla-master": [text("processCode","Process",true),select("classification","Classification","sla-classification",true),number("durationValue","Duration Value",true,{ min:"1" }),select("durationUnit","Duration Unit","sla-duration-units",true),select("timeBasis","Time Basis","sla-time-bases",true),number("warningPct","Warning %",true,{ min:"1", max:"99" }),number("escalationPct","Escalation %",true,{ min:"2", max:"100" }),date("effectiveFrom","Effective From"),area("remarks","Remarks"),select("status","Status","status-repository",true)]
+    "sla-master": [text("processCode","Process",true),select("classification","Classification","sla-classification",true),number("durationValue","Duration Value",true,{ min:"1" }),select("durationUnit","Duration Unit","sla-duration-units",true),select("timeBasis","Time Basis","sla-time-bases",true),number("warningPct","Warning %",true,{ min:"1", max:"99" }),number("escalationPct","Escalation %",true,{ min:"2", max:"100" }),date("effectiveFrom","Effective From"),area("remarks","Remarks"),select("status","Status","status-repository",true)],
+    // Time Zone Master (058/059). Global reference data (no organization
+    // scoping) rendered through the generic modal like authorities / the
+    // assurance-* masters -- no dedicated form needed, unlike SLA Master.
+    // ianaTimeZone is the authoritative identifier (058's own note: never
+    // treat utcOffset as the primary value, since DST changes it through
+    // the year); utcOffset here is only ever the display label.
+    "time-zone-master": [text("timeZoneName","Time Zone Name",true,{ placeholder:"India Standard Time" }),text("ianaTimeZone","IANA Time Zone",true,{ placeholder:"Asia/Kolkata" }),text("utcOffset","UTC Offset",true,{ placeholder:"UTC+05:30" }),area("remarks","Remarks"),select("status","Status","status-repository",true)]
   };
   const entityLabels = {
     "authorities": { singular: "Authority", add: "Add Authority", edit: "Edit Authority", view: "View Authority", saved: "Authority saved successfully." },
@@ -205,7 +212,8 @@
     "assurance-report-templates": { singular: "Report Template", add: "Add Report Template", edit: "Edit Report Template", view: "View Report Template", saved: "Report template saved successfully." },
     "assurance-starter-templates": { singular: "Starter Assurance Template", add: "Add Starter Template", edit: "Edit Starter Template", view: "View Starter Template", saved: "Starter template saved successfully." },
     "assurance-version-history": { singular: "Version History Entry", add: "Add Entry", edit: "Edit Entry", view: "View Entry", saved: "Version history entry saved successfully." },
-    "sla-master": { singular: "SLA", add: "Add SLA", edit: "Edit SLA", view: "View SLA", saved: "SLA saved successfully." }
+    "sla-master": { singular: "SLA", add: "Add SLA", edit: "Edit SLA", view: "View SLA", saved: "SLA saved successfully." },
+    "time-zone-master": { singular: "Time Zone", add: "Add Time Zone", edit: "Edit Time Zone", view: "View Time Zone", saved: "Time zone saved successfully." }
   };
   const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" })[char]);
   // Resolved against the application root (see gracUrl in site.js).

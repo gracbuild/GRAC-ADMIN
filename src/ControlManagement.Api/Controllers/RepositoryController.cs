@@ -62,7 +62,11 @@ public sealed class RepositoryController(
         // drive breach warnings and escalations across the assurance runtime.
         // Manage view + form live under Repository/Index?areaKey=sla-master
         // and Repository/SlaMaster.
-        "sla-master"
+        "sla-master",
+        // Time Zone Master (058/059) - standardized IANA time zones shared
+        // across every GRAC module. Manage view lives under the generic
+        // Repository/Index?areaKey=time-zone-master (no dedicated form).
+        "time-zone-master"
     };
 
     // Obligation taxonomy entity types alias to the 'obligations' permission
